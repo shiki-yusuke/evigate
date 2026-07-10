@@ -13,16 +13,26 @@
 // `claim_kind` に加えて `target_claim_turn` を記録する。`evigate eval --mutations` は
 // kind だけでなく turn も完全一致させて採点対象 claim を特定する。
 //
+// Week 4（匿名化コーパス実体化）: source 解決を `resolveCorpusSources`（生 transcript のみ）
+// から `resolveMutationSources`（匿名化コーパス優先、無ければ生 transcript にフォールバック）
+// に切り替えた。`resolveRealPath`/`resolveCorpusSources` 自体は src/corpus-sources.ts に
+// 切り出した（`evigate export-corpus` でも同じ解決ロジックが必要になったため。挙動は
+// 変更していない）。
+//
 // 生 transcript・mutant は絶対にコミットしない（.gitignore で ./mutations/ を除外）。
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseClaudeCodeTranscript } from "./adapters/claude-code-transcript.js";
 import { RuleBasedClaimExtractor } from "./claims.js";
+import { defaultAnonymizedCorpusDir, resolveMutationSources, type UnresolvedSource } from "./corpus-sources.js";
 import { buildContext, generateMutationsForSession, rewriteSessionId, type MutationOutput, type OperatorId } from "./mutate.js";
 import type { Store } from "./store.js";
 import type { Claim, Verdict } from "./schema.js";
+
+export type { ResolvedSource, UnresolvedSource } from "./corpus-sources.js";
+export { resolveRealPath, resolveCorpusSources } from "./corpus-sources.js";
 
 export interface ManifestEntry {
   mutant_id: string;
@@ -39,54 +49,10 @@ export interface ManifestEntry {
   notes: string;
 }
 
-export interface ResolvedSource {
-  sessionId: string;
-  realPath: string;
-}
-
-export interface UnresolvedSource {
-  sessionId: string;
-  storedSourcePath: string;
-  reason: string;
-}
-
 export interface SkippedMutant {
   operator: OperatorId;
   sourceSession: string;
   reason: string;
-}
-
-/**
- * Store の source_path（redact 済み。"/Users/USER" や "-Users-USER-" にマスクされている）
- * から、このマシン上の実ファイルパスを復元する。redact.ts が実行時の OS ユーザー名を
- * 汎用マスクした処理の逆変換であり、ユーザー名をコードにハードコードしない
- * （ingest したマシンと同じユーザーで実行する前提。異なる場合やファイル削除済みの
- *  場合は解決できず、呼び出し側が unresolved として扱う）。
- */
-export function resolveRealPath(storedSourcePath: string): string {
-  const username = userInfo().username;
-  return storedSourcePath.replaceAll("/Users/USER", `/Users/${username}`).replaceAll("-Users-USER-", `-Users-${username}-`);
-}
-
-export function resolveCorpusSources(store: Store): { resolved: ResolvedSource[]; unresolved: UnresolvedSource[] } {
-  const resolved: ResolvedSource[] = [];
-  const unresolved: UnresolvedSource[] = [];
-
-  for (const sessionId of store.listSessionIds()) {
-    const storedSourcePath = store.getSessionSourcePath(sessionId);
-    if (!storedSourcePath) {
-      unresolved.push({ sessionId, storedSourcePath: "", reason: "source_path not found in store" });
-      continue;
-    }
-    const realPath = resolveRealPath(storedSourcePath);
-    if (!existsSync(realPath)) {
-      unresolved.push({ sessionId, storedSourcePath, reason: `resolved path does not exist: ${realPath}` });
-      continue;
-    }
-    resolved.push({ sessionId, realPath });
-  }
-
-  return { resolved, unresolved };
 }
 
 type SelfCheckResult =
@@ -168,14 +134,23 @@ export interface GenerateAllResult {
   files: Map<string, string>;
   skipped: SkippedMutant[];
   unresolvedSources: UnresolvedSource[];
+  /** Week 4: 匿名化コーパスが無く、生 transcript にフォールバックした session_id 一覧。 */
+  rawFallbackSessions: string[];
 }
 
-/** corpus 全セッションに全オペレータを適用し、自己検証を通過した mutant だけを集める。 */
-export async function generateAllMutations(store: Store): Promise<GenerateAllResult> {
-  const { resolved, unresolved } = resolveCorpusSources(store);
+/**
+ * corpus 全セッションに全オペレータを適用し、自己検証を通過した mutant だけを集める。
+ * Week 4: source は匿名化コーパス（`anonymizedDir/<session_id>.jsonl`）を優先し、
+ * 無ければ生 transcript にフォールバックする（フォールバックした session は
+ * `rawFallbackSessions` に載るので、呼び出し側（cli.ts）が警告を表示できる）。
+ */
+export async function generateAllMutations(store: Store, options: { anonymizedDir?: string } = {}): Promise<GenerateAllResult> {
+  const anonymizedDir = options.anonymizedDir ?? defaultAnonymizedCorpusDir();
+  const { resolved, unresolved } = resolveMutationSources(store, anonymizedDir);
   const entries: ManifestEntry[] = [];
   const files = new Map<string, string>();
   const skipped: SkippedMutant[] = [];
+  const rawFallbackSessions = resolved.filter((r) => r.origin === "raw").map((r) => r.sessionId);
 
   for (const { sessionId, realPath } of resolved) {
     const rawFileText = readFileSync(realPath, "utf8");
@@ -207,7 +182,7 @@ export async function generateAllMutations(store: Store): Promise<GenerateAllRes
     }
   }
 
-  return { entries, files, skipped, unresolvedSources: unresolved };
+  return { entries, files, skipped, unresolvedSources: unresolved, rawFallbackSessions };
 }
 
 export function writeMutationOutputs(outDir: string, entries: ManifestEntry[], files: Map<string, string>): void {

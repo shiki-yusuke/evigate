@@ -55,12 +55,30 @@ function currentOsUsername(): string | undefined {
  * `\b` は `_` を単語構成文字とみなすため "xxx_alice" のような結合を境界とみなせない。
  * そのため独自に「英数字でない（アンダースコアは英数字扱いしない）」を境界条件にし、
  * 大文字小文字も無視する（実データで "A13714" という大文字化も観測されたため）。
+ *
+ * Week 4（匿名化コーパス実体化）追加修正: 本ルールは「レンダリング済みの文字列値」に
+ * 適用される前提で書かれていたが、`evigate export-corpus`（src/export-corpus.ts）は
+ * JSON 行の生テキストに直接 redact() を通す。その結果、`\n`（バックスラッシュ+n の
+ * 2文字。レンダリング後は改行1文字だが、生テキストでは文字として残る）のようなエスケープ
+ * シーケンスの末尾文字（n/r/t/b/f）が、直後に続く実ユーザー名と地続きの「英数字」に見えてしまい、
+ * 境界条件が偽って不成立になることを実 corpus（ps aux 出力のプレビュー埋め込み）で発見した
+ * （例: "...\\nalice            6416..." で "\n" の "n" と "alice" が地続きに見え、
+ *  末尾一致のマスクが素通りしていた）。バックスラッシュ+単一文字エスケープ（\b \f \n \r \t）
+ * の直後は境界とみなしてよいよう、先頭側の否定後読みを二重否定後読みで拡張した
+ * （`\uXXXX` のような複数文字エスケープの末尾がたまたま英数字に一致するケースは対象外。
+ *  発生頻度が極めて低いと判断した非阻害的な仮定。万一発生しても、書き込み前の
+ *  redaction 監査ガード（export-corpus-runner.ts の verifyNoResidualSecrets）が
+ *  検出し export を中止するため、黙った漏洩には至らない）。
  */
 function buildCurrentUserRule(): Rule | undefined {
   const username = currentOsUsername();
   if (!username) return undefined;
+  // `(?<!(?<!\\)[a-zA-Z0-9])`: 直前が「英数字」かつ「その英数字の直前がバックスラッシュでない」
+  // 場合にのみ境界違反とみなす。"\n" の "n" のようにバックスラッシュ直後の単一文字エスケープは
+  // 境界として許容する。
+  const leadingBoundary = `(?<!(?<!\\\\)[a-zA-Z0-9])`;
   return {
-    pattern: new RegExp(`(?<![a-zA-Z0-9])${escapeRegExp(username)}(?![a-zA-Z0-9])`, "gi"),
+    pattern: new RegExp(`${leadingBoundary}${escapeRegExp(username)}(?![a-zA-Z0-9])`, "gi"),
     replace: () => "USER",
   };
 }

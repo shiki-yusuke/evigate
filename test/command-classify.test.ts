@@ -88,4 +88,27 @@ describe("classifyCommand", () => {
     expect(cls("bunx eslint src/sample-blocks/adapters/foo.ts")).toBe("lint");
     expect(cls("bunx vitest run src/foo.test.ts")).toBe("test");
   });
+
+  // Week 4 F11（人手検証で発見した FP、セッション 4dec8f00 の biome 実行が該当）:
+  // 辞書は先頭トークンが裸のランナー名であることを前提にしており、ディレクトリパス付きの
+  // 直接バイナリ起動（node_modules 配下の直接実行、シェバン経由の絶対パス実行等）が
+  // class 未分類のままになっていた。先頭トークンの basename でも辞書照合するよう拡張した。
+  it("F11: classifies a direct binary invocation via a node_modules path (basename match)", () => {
+    expect(cls("node_modules/@biomejs/cli-darwin-arm64/biome check --level=error")).toBe("lint");
+  });
+
+  it("F11: classifies a direct binary invocation via a relative .bin path (basename match)", () => {
+    expect(cls("./node_modules/.bin/eslint src/")).toBe("lint");
+  });
+
+  it("F11: classifies a direct binary invocation via an absolute path (basename match)", () => {
+    expect(cls("/usr/local/bin/vitest run")).toBe("test");
+  });
+
+  it("F11: does NOT classify a denylisted display command whose argument merely mentions a runner path (no over-matching)", () => {
+    // "echo" 自体はパス付きではないため basename 正規化しても "echo" のままで、
+    // denylist は従来どおり機能する（node_modules/.bin/eslint という文字列が引数に
+    // 現れているだけで lint 分類されてはいけない）。
+    expect(cls("echo node_modules/.bin/eslint")).toBeUndefined();
+  });
 });

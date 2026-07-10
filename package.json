@@ -1,8 +1,28 @@
 {
   "name": "evigate",
   "version": "0.2.0",
-  "private": true,
-  "description": "Evidence gate for AI coding agent completion claims — ingest and normalize past session transcripts.",
+  "description": "A local CLI that verifies AI coding agents' \"done\" claims against execution evidence (tests, commands, diffs, instruction compliance).",
+  "keywords": [
+    "ai-agent",
+    "llm",
+    "coding-agent",
+    "evidence",
+    "verification",
+    "audit",
+    "cli",
+    "claude-code",
+    "codex"
+  ],
+  "license": "MIT",
+  "author": "shiki-yusuke",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/evigate.git"
+  },
+  "homepage": "https://github.com/OWNER/evigate#readme",
+  "bugs": {
+    "url": "https://github.com/OWNER/evigate/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -10,11 +30,15 @@
   "bin": {
     "evigate": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

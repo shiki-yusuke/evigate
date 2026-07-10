@@ -34,6 +34,29 @@ describe("redact", () => {
     expect(result.text).toBe("shiki_yusuke_USER, [REDACTED_EMAIL]");
   });
 
+  // Week 4（匿名化コーパス実体化）で実 corpus から発見: `evigate export-corpus` は JSON 行の
+  // 生テキストに直接 redact() を通すため、レンダリング前のエスケープシーケンス（\n 等）が
+  // 残ったまま渡ってくる。"\n" の "n" が直後のユーザー名と地続きの英数字に見えてしまい、
+  // 単語境界条件が偽って不成立になり、ps aux 出力プレビューの所有者列が素通りしていた。
+  it("masks the bare username even when immediately preceded by a JSON escape sequence letter (\\n\\t\\r\\b\\f)", () => {
+    const username = userInfo().username;
+    for (const esc of ["\\n", "\\t", "\\r", "\\b", "\\f"]) {
+      const rawJsonLine = `{"content":"preview:${esc}${username}            6416   0.0  0.0"}`;
+      const result = redact(rawJsonLine);
+      expect(result.text).not.toContain(username);
+      expect(result.text).toContain(`${esc}USER`);
+    }
+  });
+
+  it("still rejects a real alphanumeric prefix as a word boundary violation (no over-masking regression)", () => {
+    const username = userInfo().username;
+    // "x" + username は依然として1つの識別子とみなし、単独の bare word としてはマスクしない
+    // （既存の "shiki_yusuke_A13714" 型テストと同様、境界条件そのものは変えていないことの確認）。
+    const result = redact(`prefixed${username}suffixed and standalone ${username} here`);
+    expect(result.text).toContain(`prefixed${username}suffixed`);
+    expect(result.text).toContain("standalone USER here");
+  });
+
   it("masks fake API key formats (sk-, ghp_, xoxb-, AKIA, lin_api_)", () => {
     const input =
       "keys: sk-FAKE1234567890ABCDEFGH ghp_FAKE1234567890ABCDEFGHIJKLMNOPQRSTUV xoxb-FAKE1234567890-ABCDEFGHIJ AKIAFAKEKEY1234567890 lin_api_FAKEKEY1234567890ABCD";
