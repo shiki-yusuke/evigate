@@ -22,6 +22,11 @@ describe("parseClaudeCodeTranscript", () => {
     expect(byType("command")).toHaveLength(1);
     expect(byType("file_edit")).toHaveLength(1);
     expect(byType("report")).toHaveLength(1);
+    expect(byType("instruction")).toHaveLength(1);
+
+    const instructionEvent = byType("instruction")[0]!;
+    expect(instructionEvent.redacted_input).toContain("run the tests");
+    expect(instructionEvent.cwd).toBe("/Users/USER/project");
 
     const commandEvent = byType("command")[0]!;
     expect(commandEvent.redacted_input).toBe("npm test");
@@ -40,7 +45,7 @@ describe("parseClaudeCodeTranscript", () => {
 
     // seq は 0 始まりの連番であること
     const seqs = result.events.map((e) => e.seq).sort((a, b) => a - b);
-    expect(seqs).toEqual([0, 1, 2]);
+    expect(seqs).toEqual([0, 1, 2, 3]);
 
     // evidence_ref: command/file_edit は tool_use と tool_result の両方の行番号を持つ
     expect(commandEvent.evidence_ref.tool_use_source_line).toBeDefined();
@@ -142,5 +147,21 @@ describe("parseClaudeCodeTranscript", () => {
 
     const searchCommand = commands.find((c) => c.redacted_input === 'rg "vitest" .')!;
     expect(searchCommand.command_class).toBeUndefined();
+  });
+
+  it("extracts instruction events from plain-string and mixed-array user turns, redacting them (Week 2)", async () => {
+    const result = await parseClaudeCodeTranscript(path.join(FIXTURES_DIR, "session-instruction.jsonl"));
+    const instructions = result.events.filter((e) => e.type === "instruction");
+
+    expect(instructions).toHaveLength(2);
+    expect(instructions[0]!.redacted_input).toContain("担当");
+    expect(instructions[0]!.redacted_input).not.toMatch(/fake@example\.com/);
+    expect(instructions[0]!.redacted_input).toContain("[REDACTED_EMAIL]");
+    // tool_result と同じ user 行に混在する text block も instruction として拾う
+    expect(instructions[1]!.redacted_input).toContain("フォーマット");
+
+    // tool_result 混在行の instruction は、同じ行の tool_result 由来の command イベントと共存する
+    const command = result.events.find((e) => e.type === "command")!;
+    expect(command.outcome?.status).toBe("ok");
   });
 });

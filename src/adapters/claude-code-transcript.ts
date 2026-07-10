@@ -15,6 +15,10 @@
 // R3 is_error 省略時の扱い、R4 sessionId をトップレベルフィールドから取得、
 // R5 evidence_ref を tool_use/tool_result 行に分離、R6 command_class の suppressed フラグ配線、
 // R7 cwd の捕捉、R10 skip 内訳の細分化、軽微12 input_digest → redacted_input。
+//
+// Week 2: user のテキストターン（tool_result を除く）を "instruction" イベントとして抽出する。
+// task contract 抽出（obligations/prohibitions/scope_paths）の一次ソースになるため、
+// redaction は他イベント同様に必須で通す。
 
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
@@ -281,7 +285,22 @@ export async function parseClaudeCodeTranscript(filePath: string): Promise<Parse
       const content = message?.content;
       const ts = typeof obj.timestamp === "string" ? obj.timestamp : undefined;
 
-      if (Array.isArray(content)) {
+      if (typeof content === "string") {
+        if (content.trim() !== "") {
+          const redacted = redact(content);
+          redactionCount += redacted.count;
+          const redactedCwd = lineCwd ? redact(lineCwd) : undefined;
+          if (redactedCwd) redactionCount += redactedCwd.count;
+          finalizedEvents.push({
+            ts,
+            type: "instruction",
+            redacted_input: redacted.text,
+            cwd: redactedCwd?.text,
+            evidence_ref: { tool_use_source_line: lineNumber },
+          });
+        }
+      } else if (Array.isArray(content)) {
+        const textParts: string[] = [];
         for (const block of content) {
           if (!isRecord(block)) {
             stats.invalidBlockCount += 1;
@@ -307,12 +326,27 @@ export async function parseClaudeCodeTranscript(filePath: string): Promise<Parse
               redactionCount += built.redactionCount;
             }
           } else if (block.type === "text") {
-            // 素の user プロンプトに混在する text block。Week 1 では抽出対象外。
+            if (typeof block.text === "string" && block.text.trim() !== "") {
+              textParts.push(block.text);
+            }
           } else {
             stats.invalidBlockCount += 1;
           }
         }
-      } else if (typeof content !== "string" && content !== undefined && content !== null) {
+        if (textParts.length > 0) {
+          const redacted = redact(textParts.join("\n"));
+          redactionCount += redacted.count;
+          const redactedCwd = lineCwd ? redact(lineCwd) : undefined;
+          if (redactedCwd) redactionCount += redactedCwd.count;
+          finalizedEvents.push({
+            ts,
+            type: "instruction",
+            redacted_input: redacted.text,
+            cwd: redactedCwd?.text,
+            evidence_ref: { tool_use_source_line: lineNumber },
+          });
+        }
+      } else if (content !== undefined && content !== null) {
         stats.invalidBlockCount += 1;
       }
       continue;

@@ -223,4 +223,123 @@ describe("Store", () => {
 
     raw.close();
   });
+
+  it("rejects opening a DB with an old user_version (Week 2: no migration, must re-ingest)", () => {
+    const raw = new Database(dbPath);
+    raw.pragma("user_version = 1");
+    raw.close();
+
+    expect(() => new Store(dbPath)).toThrow(/re-ingest|user_version/);
+  });
+
+  it("rejects opening a DB from Week 2 round 1 (user_version=2, pre claims.cwd column)", () => {
+    const raw = new Database(dbPath);
+    raw.pragma("user_version = 2");
+    raw.close();
+
+    expect(() => new Store(dbPath)).toThrow(/re-ingest|user_version/);
+  });
+
+  it("accepts a brand-new (user_version=0) DB file and initializes it at the current version", () => {
+    const store = new Store(dbPath);
+    store.close();
+
+    const raw = new Database(dbPath);
+    expect(raw.pragma("user_version", { simple: true })).toBe(3);
+    raw.close();
+  });
+
+  it("stores and retrieves instruction events, and includes them in listSessionSummaries", () => {
+    const store = new Store(dbPath);
+    const sessionId = "sess-instruction";
+    const events: Event[] = [
+      {
+        seq: 0,
+        session_id: sessionId,
+        type: "instruction",
+        redacted_input: "テストを通してください。",
+        evidence_ref: { tool_use_source_line: 1 },
+      },
+    ];
+    store.upsertSession(makeSession(sessionId), events, FULL_EXTRA);
+
+    const summaries = store.listSessionSummaries();
+    expect(summaries[0]!.instruction_count).toBe(1);
+
+    const restored = store.getEventsForSession(sessionId);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]!.type).toBe("instruction");
+    expect(restored[0]!.redacted_input).toBe("テストを通してください。");
+
+    store.close();
+  });
+
+  it("saveAuditResult persists claims and verdicts, and re-audit replaces the prior set", () => {
+    const store = new Store(dbPath);
+    const sessionId = "sess-1";
+    store.upsertSession(makeSession(sessionId), makeEvents(sessionId), FULL_EXTRA);
+
+    store.saveAuditResult(
+      sessionId,
+      [{ id: "c1", session_id: sessionId, text: "tests pass", turn: 3, kind: "test_pass" }],
+      [{ session_id: sessionId, claim_id: "c1", verdict: "proven", reason_code: "D1", evidence_refs: [0, 2] }],
+    );
+
+    expect(store.getClaimsForSession(sessionId)).toHaveLength(1);
+    expect(store.getVerdictsForSession(sessionId)[0]!.evidence_refs).toEqual([0, 2]);
+
+    // 再 audit（claim が0件になるケース）で置き換わることを確認
+    store.saveAuditResult(sessionId, [], []);
+    expect(store.getClaimsForSession(sessionId)).toHaveLength(0);
+    expect(store.getVerdictsForSession(sessionId)).toHaveLength(0);
+
+    store.close();
+  });
+
+  it("rejects saving a verdict whose claim_id does not match any claim in the same call (F7)", () => {
+    const store = new Store(dbPath);
+    const sessionId = "sess-1";
+    store.upsertSession(makeSession(sessionId), makeEvents(sessionId), FULL_EXTRA);
+
+    expect(() =>
+      store.saveAuditResult(
+        sessionId,
+        [{ id: "c1", session_id: sessionId, text: "tests pass", turn: 3, kind: "test_pass" }],
+        [{ session_id: sessionId, claim_id: "c-orphan", verdict: "proven", reason_code: "D1", evidence_refs: [] }],
+      ),
+    ).toThrow(/does not match any claim/);
+
+    store.close();
+  });
+
+  it("re-ingesting a session deletes its stale claims/verdicts (Week 1 review item 9)", () => {
+    const store = new Store(dbPath);
+    const sessionId = "sess-1";
+    store.upsertSession(makeSession(sessionId), makeEvents(sessionId), FULL_EXTRA);
+    store.saveAuditResult(
+      sessionId,
+      [{ id: "c1", session_id: sessionId, text: "tests pass", turn: 3, kind: "test_pass" }],
+      [{ session_id: sessionId, claim_id: "c1", verdict: "proven", reason_code: "D1", evidence_refs: [] }],
+    );
+    expect(store.getClaimsForSession(sessionId)).toHaveLength(1);
+
+    store.upsertSession(makeSession(sessionId), makeEvents(sessionId), FULL_EXTRA);
+    expect(store.getClaimsForSession(sessionId)).toHaveLength(0);
+    expect(store.getVerdictsForSession(sessionId)).toHaveLength(0);
+
+    store.close();
+  });
+
+  it("rejects saving a claim whose text still contains the current OS username", () => {
+    const store = new Store(dbPath);
+    const sessionId = "sess-1";
+    store.upsertSession(makeSession(sessionId), makeEvents(sessionId), FULL_EXTRA);
+    const username = userInfo().username;
+
+    expect(() =>
+      store.saveAuditResult(sessionId, [{ id: "c1", session_id: sessionId, text: `path /Users/${username}/x leaked`, kind: "test_pass" }], []),
+    ).toThrow(/redaction audit failed/);
+
+    store.close();
+  });
 });

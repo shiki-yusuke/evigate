@@ -1,16 +1,18 @@
-// 正規化イベントスキーマ v1
+// 正規化イベントスキーマ v2
 // 出典: prompts/05-dev-tool-ideas/09-mvp-design.md 「データ設計」セクション
-// Week 1 で実際に生成するのは session + events のみ。
-// task_contract / claims / verdicts は型定義のみ（Week 2 以降で生成器を実装する）。
 //
 // 2026-07-10 レビュー修正（docs/reviews/2026-07-10-week1-codex.md）反映:
 // R5 evidence_ref を tool_use/tool_result の行番号に分離、R6 suppressed フラグ追加、
 // R7 ClaimSchema に build_ok/session_id、EventSchema に cwd、VerdictSchema の
 // evidence_refs は同一 session 内の seq を指す旨を明文化。軽微12: input_digest → redacted_input。
+//
+// Week 2（instruction イベント + claim/contract 抽出 + 検出器 D1〜D3 + audit）反映:
+// EventType に "instruction" を追加（DB は PRAGMA user_version=2、旧 DB は re-ingest 必須）。
+// task_contract / claims / verdicts の生成器を実装（`src/contract.ts` / `src/claims.ts` / `src/detectors.ts`）。
 
 import { z } from "zod";
 
-export const SCHEMA_VERSION = 1 as const;
+export const SCHEMA_VERSION = 2 as const;
 
 // ---- session ----
 
@@ -33,7 +35,7 @@ export type Session = z.infer<typeof SessionSchema>;
 
 // ---- events（tool-observed / 改竄不能側） ----
 
-export const EventTypeSchema = z.enum(["command", "file_edit", "test_run", "report"]);
+export const EventTypeSchema = z.enum(["command", "file_edit", "test_run", "report", "instruction"]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 
 export const CommandClassSchema = z.enum(["test", "lint", "build", "composite"]);
@@ -75,7 +77,7 @@ export const EventSchema = z.object({
 });
 export type Event = z.infer<typeof EventSchema>;
 
-// ---- task_contract（Week 2 以降で生成。型定義のみ） ----
+// ---- task_contract（Week 2: src/contract.ts の RuleBasedContractExtractor が生成） ----
 
 export const ObligationSchema = z.object({
   id: z.string(),
@@ -100,7 +102,7 @@ export const TaskContractSchema = z.object({
 });
 export type TaskContract = z.infer<typeof TaskContractSchema>;
 
-// ---- claims（agent-declared。events とは絶対に混ぜない。Week 2 以降で生成。型定義のみ） ----
+// ---- claims（agent-declared。events とは絶対に混ぜない。Week 2: src/claims.ts が生成） ----
 
 export const ClaimSchema = z.object({
   id: z.string(),
@@ -110,10 +112,13 @@ export const ClaimSchema = z.object({
   turn: z.number().int().optional(),
   // R7: build_ok を追加（command/obligation の kind には既に build があり整合させる）。
   kind: z.enum(["test_pass", "lint_clean", "build_ok", "scope_respected", "task_done"]),
+  // F2（Week 2 修正ラウンド2）: report イベントの cwd を保持する。検出器が
+  // 「claim と同一 cwd の未解決失敗のみを contradicted の根拠にする」ために必須。
+  cwd: z.string().optional(),
 });
 export type Claim = z.infer<typeof ClaimSchema>;
 
-// ---- verdicts（Week 2〜3 以降で生成。型定義のみ） ----
+// ---- verdicts（Week 2: src/detectors.ts の決定論的検出器 D1〜D3 が生成。LLM 判定は Week 3） ----
 
 export const VerdictSchema = z.object({
   // R7: verdict も session に紐づける（claim_id 単体では session をまたいだ場合に一意にならない）。

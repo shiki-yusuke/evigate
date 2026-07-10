@@ -1,5 +1,5 @@
 {
-  "_comment": "出典: prompts/05-dev-tool-ideas/12-corpus-and-fixtures.md のコマンド分類辞書。各パターンは「コマンドをシェル区切り(&&, ;, 改行, |, ||)で分割したセグメントの先頭」にのみアンカーする（^）。echo/rg/grep/cat/sed 等の引数内の文字列を誤って拾わないようにするため。composite は test+lint+build の複合として扱う。bun は実コーパス（example-app）で多用されるため npm/pnpm/yarn と並記した（2026-07-10 レビュー修正時の実データ検証で追加）。",
+  "_comment": "出典: prompts/05-dev-tool-ideas/12-corpus-and-fixtures.md のコマンド分類辞書。各パターンは「コマンドをシェル区切り(&&, ;, 改行, |, ||)で分割したセグメントの先頭」にのみアンカーする（^）。echo/rg/grep/cat/sed 等の引数内の文字列を誤って拾わないようにするため。composite は test+lint+build の複合として扱う。bun/bunx は実コーパス（example-app）で多用されるため npm/pnpm/yarn/npx と並記した（2026-07-10 レビュー修正時、および Week 2 の実データ検証で bunx 抜けを追加発見・修正）。",
   "test": [
     "^(npx\\s+)?vitest\\b",
     "^(npx\\s+)?jest\\b",
@@ -8,6 +8,8 @@
     "^yarn\\s+test\\b",
     "^bun\\s+(run\\s+)?test\\b",
     "^bun\\s+(run\\s+)?vitest\\b",
+    "^bunx\\s+vitest\\b",
+    "^bunx\\s+jest\\b",
     "^pytest\\b"
   ],
   "lint": [
@@ -15,14 +17,16 @@
     "^biome\\s+check\\b",
     "^npm\\s+run\\s+lint\\b",
     "^pnpm\\s+lint\\b",
-    "^bun\\s+run\\s+lint\\b"
+    "^bun\\s+run\\s+lint\\b",
+    "^bunx\\s+eslint\\b"
   ],
   "build": [
     "^tsc\\b.*--noEmit",
     "^npm\\s+run\\s+build\\b",
     "^vite\\s+build\\b",
     "^bun\\s+run\\s+build\\b",
-    "^bun\\s+run\\s+typecheck\\b"
+    "^bun\\s+run\\s+typecheck\\b",
+    "^bunx\\s+tsc\\b.*--noEmit"
   ],
   "composite": {
     "patterns": ["^preflight\\b"],

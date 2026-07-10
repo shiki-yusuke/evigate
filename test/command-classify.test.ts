@@ -83,4 +83,9 @@ describe("classifyCommand", () => {
     expect(cls("bun run build")).toBe("build");
     expect(cls("bun run typecheck")).toBe("build");
   });
+
+  it("classifies bunx invocations (bun's npx equivalent, found missing during Week 2 corpus verification)", () => {
+    expect(cls("bunx eslint src/sample-blocks/adapters/foo.ts")).toBe("lint");
+    expect(cls("bunx vitest run src/foo.test.ts")).toBe("test");
+  });
 });

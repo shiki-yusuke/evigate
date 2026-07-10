@@ -1,5 +1,5 @@
 // ローカル SQLite ストレージ（better-sqlite3）。
-// sessions / events テーブルと、集計クエリ（evigate sessions 用）を提供する。
+// sessions / events / claims / verdicts テーブルと、集計クエリを提供する。
 //
 // 2026-07-10 レビュー修正（docs/reviews/2026-07-10-week1-codex.md）反映:
 // R2 保存直前に redaction 監査を必須化（defense in depth）、
@@ -7,10 +7,20 @@
 // R5 evidence_ref を tool_use/tool_result 行に分離した列、R6 suppressed 列、R7 cwd 列、
 // R9 foreign_keys=ON・UNIQUE(session_id, seq)・CHECK 制約・保存前 zod 検証・PRAGMA user_version、
 // R10 skip 内訳の列化、軽微12 input_digest → redacted_input。
+//
+// Week 2: events.type に "instruction" を追加し PRAGMA user_version=2 に上げた。
+// migration コードは書かない（pre-release の裁定）。旧バージョン（user_version=1）の
+// DB を開いた場合はエラーにし、re-ingest を促す。claims/verdicts テーブルを追加し、
+// re-ingest 時（upsertSession）は該当 session の claims/verdicts も削除する
+// （Week 1 レビュー指摘9の残項目）。
 
 import Database from "better-sqlite3";
-import { SessionSchema, EventSchema, type Event, type Session } from "./schema.js";
+import { SessionSchema, EventSchema, ClaimSchema, VerdictSchema, type Event, type Session, type Claim, type Verdict } from "./schema.js";
 import { assertNoResidualSecrets } from "./redact-audit.js";
+
+// 2026-07-10 修正ラウンド2: claims テーブルに cwd 列を追加（F2）したため 3 へ上げる。
+// migration コードは書かない裁定のため、旧バージョンの DB は re-ingest を要求する。
+const DB_USER_VERSION = 3;
 
 export interface SessionSummary {
   session_id: string;
@@ -18,6 +28,7 @@ export interface SessionSummary {
   event_count: number;
   command_count: number;
   file_edit_count: number;
+  instruction_count: number;
   report_count: number;
   error_count: number;
   total_lines: number;
@@ -62,7 +73,25 @@ export class Store {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
+    this.checkVersionOrThrow(dbPath);
     this.migrate();
+  }
+
+  /**
+   * pre-release の裁定: migration コードは書かない。旧バージョン（user_version=1）の
+   * DB を検出したら、re-ingest を促すエラーで停止する。user_version=0（未初期化の新規
+   * ファイル）は問題なく先へ進む。
+   */
+  private checkVersionOrThrow(dbPath: string): void {
+    const currentVersion = this.db.pragma("user_version", { simple: true }) as number;
+    if (currentVersion !== 0 && currentVersion !== DB_USER_VERSION) {
+      this.db.close();
+      throw new Error(
+        `${dbPath} は古いスキーマ（user_version=${currentVersion}）です。このバージョンの evigate は ` +
+          `user_version=${DB_USER_VERSION} を前提としています。migration は提供されないため、DB ファイルを ` +
+          `削除してから対象セッションを re-ingest してください。`,
+      );
+    }
   }
 
   private migrate(): void {
@@ -90,7 +119,7 @@ export class Store {
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         seq INTEGER NOT NULL,
         ts TEXT,
-        type TEXT NOT NULL CHECK (type IN ('command', 'file_edit', 'test_run', 'report')),
+        type TEXT NOT NULL CHECK (type IN ('command', 'file_edit', 'test_run', 'report', 'instruction')),
         tool TEXT,
         redacted_input TEXT,
         command_class TEXT CHECK (command_class IS NULL OR command_class IN ('test', 'lint', 'build', 'composite')),
@@ -105,8 +134,33 @@ export class Store {
       );
 
       CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
+
+      CREATE TABLE IF NOT EXISTS claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        claim_id TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        text TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('test_pass', 'lint_clean', 'build_ok', 'scope_respected', 'task_done')),
+        turn INTEGER,
+        cwd TEXT,
+        UNIQUE (session_id, claim_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_claims_session_id ON claims(session_id);
+
+      CREATE TABLE IF NOT EXISTS verdicts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        claim_id TEXT NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('proven', 'contradicted', 'unknown')),
+        reason_code TEXT NOT NULL,
+        evidence_refs TEXT NOT NULL,
+        UNIQUE (session_id, claim_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_verdicts_session_id ON verdicts(session_id);
     `);
-    this.db.pragma("user_version = 1");
+    this.db.pragma(`user_version = ${DB_USER_VERSION}`);
   }
 
   /** 既存セッションの source_path を取得する（衝突検知用）。未取り込みなら undefined。 */
@@ -174,6 +228,9 @@ export class Store {
     `);
 
     const deleteEvents = this.db.prepare(`DELETE FROM events WHERE session_id = ?`);
+    // re-ingest でイベントが変わりうるため、古い claims/verdicts は無効化する（Week 1 レビュー指摘9）。
+    const deleteClaims = this.db.prepare(`DELETE FROM claims WHERE session_id = ?`);
+    const deleteVerdicts = this.db.prepare(`DELETE FROM verdicts WHERE session_id = ?`);
 
     const insertEvent = this.db.prepare(`
       INSERT INTO events (
@@ -207,6 +264,8 @@ export class Store {
         redaction_count: extra.redactionCount,
       });
       deleteEvents.run(parsedSession.id);
+      deleteClaims.run(parsedSession.id);
+      deleteVerdicts.run(parsedSession.id);
       for (const e of parsedEvents) {
         insertEvent.run({
           session_id: e.session_id,
@@ -247,6 +306,7 @@ export class Store {
           COUNT(e.id) AS event_count,
           SUM(CASE WHEN e.type = 'command' THEN 1 ELSE 0 END) AS command_count,
           SUM(CASE WHEN e.type = 'file_edit' THEN 1 ELSE 0 END) AS file_edit_count,
+          SUM(CASE WHEN e.type = 'instruction' THEN 1 ELSE 0 END) AS instruction_count,
           SUM(CASE WHEN e.type = 'report' THEN 1 ELSE 0 END) AS report_count,
           SUM(CASE WHEN e.outcome_status = 'error' THEN 1 ELSE 0 END) AS error_count
         FROM sessions s
@@ -257,6 +317,147 @@ export class Store {
       )
       .all() as SessionSummary[];
     return rows;
+  }
+
+  listSessionIds(): string[] {
+    const rows = this.db.prepare(`SELECT id FROM sessions ORDER BY ingested_at ASC`).all() as { id: string }[];
+    return rows.map((r) => r.id);
+  }
+
+  /** セッションに紐づく events を seq 昇順で復元する（detectors/audit 用）。 */
+  getEventsForSession(sessionId: string): Event[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT session_id, seq, ts, type, tool, redacted_input, command_class, suppressed,
+               outcome_status, outcome_exit_code, cwd,
+               evidence_tool_use_source_line, evidence_tool_result_source_line, evidence_tool_use_id
+        FROM events
+        WHERE session_id = ?
+        ORDER BY seq ASC
+      `,
+      )
+      .all(sessionId) as {
+      session_id: string;
+      seq: number;
+      ts: string | null;
+      type: Event["type"];
+      tool: string | null;
+      redacted_input: string | null;
+      command_class: Event["command_class"] | null;
+      suppressed: number | null;
+      outcome_status: NonNullable<Event["outcome"]>["status"] | null;
+      outcome_exit_code: number | null;
+      cwd: string | null;
+      evidence_tool_use_source_line: number | null;
+      evidence_tool_result_source_line: number | null;
+      evidence_tool_use_id: string | null;
+    }[];
+
+    return rows.map((r) => ({
+      seq: r.seq,
+      session_id: r.session_id,
+      ts: r.ts ?? undefined,
+      type: r.type,
+      tool: r.tool ?? undefined,
+      redacted_input: r.redacted_input ?? undefined,
+      command_class: r.command_class ?? undefined,
+      suppressed: r.suppressed ? true : undefined,
+      outcome:
+        r.outcome_status !== null || r.outcome_exit_code !== null
+          ? { status: r.outcome_status ?? undefined, exit_code: r.outcome_exit_code ?? undefined }
+          : undefined,
+      cwd: r.cwd ?? undefined,
+      evidence_ref: {
+        tool_use_source_line: r.evidence_tool_use_source_line ?? undefined,
+        tool_result_source_line: r.evidence_tool_result_source_line ?? undefined,
+        tool_use_id: r.evidence_tool_use_id ?? undefined,
+      },
+    }));
+  }
+
+  getClaimsForSession(sessionId: string): Claim[] {
+    const rows = this.db
+      .prepare(`SELECT claim_id AS id, session_id, text, kind, turn, cwd FROM claims WHERE session_id = ?`)
+      .all(sessionId) as { id: string; session_id: string; text: string; kind: Claim["kind"]; turn: number | null; cwd: string | null }[];
+    return rows.map((r) => ({
+      id: r.id,
+      session_id: r.session_id,
+      text: r.text,
+      kind: r.kind,
+      turn: r.turn ?? undefined,
+      cwd: r.cwd ?? undefined,
+    }));
+  }
+
+  getVerdictsForSession(sessionId: string): Verdict[] {
+    const rows = this.db
+      .prepare(`SELECT session_id, claim_id, verdict, reason_code, evidence_refs FROM verdicts WHERE session_id = ?`)
+      .all(sessionId) as { session_id: string; claim_id: string; verdict: Verdict["verdict"]; reason_code: string; evidence_refs: string }[];
+    return rows.map((r) => ({
+      session_id: r.session_id,
+      claim_id: r.claim_id,
+      verdict: r.verdict,
+      reason_code: r.reason_code,
+      evidence_refs: JSON.parse(r.evidence_refs) as number[],
+    }));
+  }
+
+  /**
+   * audit 結果（claims + verdicts）を保存する。同一 session の既存分は置き換える
+   * （再 audit で置き換え、との仕様どおり）。保存前に zod 検証と redaction 監査を通す。
+   *
+   * F7: verdicts[].claim_id が、同時に保存する claims の id 集合に含まれることを検証する
+   * （孤児 verdict や verdict 欠落 claim を公開メソッドから保存できないようにする。
+   *   DB の外部キー化はテーブル再作成を伴うため今回は行わない、との裁定）。
+   */
+  saveAuditResult(sessionId: string, claims: Claim[], verdicts: Verdict[]): void {
+    const parsedClaims = claims.map((c) => ClaimSchema.parse(c));
+    const parsedVerdicts = verdicts.map((v) => VerdictSchema.parse(v));
+
+    for (const c of parsedClaims) {
+      if (c.session_id !== sessionId) {
+        throw new Error(`claim.session_id ("${c.session_id}") does not match session_id ("${sessionId}")`);
+      }
+      assertNoResidualSecrets(`claims.text[${sessionId}#${c.id}]`, c.text);
+      assertNoResidualSecrets(`claims.cwd[${sessionId}#${c.id}]`, c.cwd);
+    }
+    const claimIds = new Set(parsedClaims.map((c) => c.id));
+    for (const v of parsedVerdicts) {
+      if (v.session_id !== sessionId) {
+        throw new Error(`verdict.session_id ("${v.session_id}") does not match session_id ("${sessionId}")`);
+      }
+      if (!claimIds.has(v.claim_id)) {
+        throw new Error(`verdict.claim_id ("${v.claim_id}") does not match any claim being saved for session "${sessionId}" (F7)`);
+      }
+    }
+
+    const deleteClaims = this.db.prepare(`DELETE FROM claims WHERE session_id = ?`);
+    const deleteVerdicts = this.db.prepare(`DELETE FROM verdicts WHERE session_id = ?`);
+    const insertClaim = this.db.prepare(
+      `INSERT INTO claims (claim_id, session_id, text, kind, turn, cwd) VALUES (@claim_id, @session_id, @text, @kind, @turn, @cwd)`,
+    );
+    const insertVerdict = this.db.prepare(
+      `INSERT INTO verdicts (session_id, claim_id, verdict, reason_code, evidence_refs) VALUES (@session_id, @claim_id, @verdict, @reason_code, @evidence_refs)`,
+    );
+
+    const tx = this.db.transaction(() => {
+      deleteClaims.run(sessionId);
+      deleteVerdicts.run(sessionId);
+      for (const c of parsedClaims) {
+        insertClaim.run({ claim_id: c.id, session_id: c.session_id, text: c.text, kind: c.kind, turn: c.turn ?? null, cwd: c.cwd ?? null });
+      }
+      for (const v of parsedVerdicts) {
+        insertVerdict.run({
+          session_id: v.session_id,
+          claim_id: v.claim_id,
+          verdict: v.verdict,
+          reason_code: v.reason_code,
+          evidence_refs: JSON.stringify(v.evidence_refs),
+        });
+      }
+    });
+    tx();
   }
 
   close(): void {

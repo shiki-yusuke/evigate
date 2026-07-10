@@ -26,6 +26,14 @@ describe("redact", () => {
     expect(redact(grepArg).text).not.toContain(username);
   });
 
+  it("masks the current OS username even underscore-joined and case-varied (e.g. 'shiki_yusuke_A13714')", () => {
+    const username = userInfo().username;
+    const compound = `shiki_yusuke_${username.toUpperCase()}, [REDACTED_EMAIL]`;
+    const result = redact(compound);
+    expect(result.text.toLowerCase()).not.toContain(username.toLowerCase());
+    expect(result.text).toBe("shiki_yusuke_USER, [REDACTED_EMAIL]");
+  });
+
   it("masks fake API key formats (sk-, ghp_, xoxb-, AKIA, lin_api_)", () => {
     const input =
       "keys: sk-FAKE1234567890ABCDEFGH ghp_FAKE1234567890ABCDEFGHIJKLMNOPQRSTUV xoxb-FAKE1234567890-ABCDEFGHIJ AKIAFAKEKEY1234567890 lin_api_FAKEKEY1234567890ABCD";

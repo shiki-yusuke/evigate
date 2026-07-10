@@ -46,16 +46,21 @@ function currentOsUsername(): string | undefined {
 
 /**
  * 実行中の OS ユーザー名がベアワード（パス表記に限らず、`ls -la`/`ps` の所有者列や
- * grep パターン中の文字列など任意の文脈）で現れた場合にもマスクするルール。
+ * grep パターン中の文字列、"shiki_yusuke_alice" のようなアンダースコア結合識別子など
+ * 任意の文脈）で現れた場合にもマスクするルール。
  * `/Users/<name>` や `-Users-<name>-` はパス文脈に限定した汎用ルールで既にマスクされるが、
- * それ以外の文脈（コマンド出力の引用、検索パターンの引数等）は "実行時のユーザー名" でしか
- * 検知できないため、ここでは動的に構築する（R1 の実データ検証で発見した漏れへの対応）。
+ * それ以外の文脈は "実行時のユーザー名" でしか検知できないため、ここでは動的に構築する
+ * （R1 の実データ検証で発見した漏れへの対応）。
+ *
+ * `\b` は `_` を単語構成文字とみなすため "xxx_alice" のような結合を境界とみなせない。
+ * そのため独自に「英数字でない（アンダースコアは英数字扱いしない）」を境界条件にし、
+ * 大文字小文字も無視する（実データで "A13714" という大文字化も観測されたため）。
  */
 function buildCurrentUserRule(): Rule | undefined {
   const username = currentOsUsername();
   if (!username) return undefined;
   return {
-    pattern: new RegExp(`\\b${escapeRegExp(username)}\\b`, "g"),
+    pattern: new RegExp(`(?<![a-zA-Z0-9])${escapeRegExp(username)}(?![a-zA-Z0-9])`, "gi"),
     replace: () => "USER",
   };
 }

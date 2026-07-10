@@ -24,7 +24,7 @@ export function findResidualSecrets(text: string): string[] {
   const violations: string[] = [];
 
   const username = safeUsername();
-  if (username && text.includes(username)) {
+  if (username && text.toLowerCase().includes(username.toLowerCase())) {
     violations.push(`os-username:${username}`);
   }
 
