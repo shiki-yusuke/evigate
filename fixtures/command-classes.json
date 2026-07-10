@@ -1,0 +1,31 @@
+{
+  "_comment": "出典: prompts/05-dev-tool-ideas/12-corpus-and-fixtures.md のコマンド分類辞書。各パターンは「コマンドをシェル区切り(&&, ;, 改行, |, ||)で分割したセグメントの先頭」にのみアンカーする（^）。echo/rg/grep/cat/sed 等の引数内の文字列を誤って拾わないようにするため。composite は test+lint+build の複合として扱う。bun は実コーパス（example-app）で多用されるため npm/pnpm/yarn と並記した（2026-07-10 レビュー修正時の実データ検証で追加）。",
+  "test": [
+    "^(npx\\s+)?vitest\\b",
+    "^(npx\\s+)?jest\\b",
+    "^npm\\s+(run\\s+)?test\\b",
+    "^pnpm\\s+test\\b",
+    "^yarn\\s+test\\b",
+    "^bun\\s+(run\\s+)?test\\b",
+    "^bun\\s+(run\\s+)?vitest\\b",
+    "^pytest\\b"
+  ],
+  "lint": [
+    "^(npx\\s+)?eslint\\b",
+    "^biome\\s+check\\b",
+    "^npm\\s+run\\s+lint\\b",
+    "^pnpm\\s+lint\\b",
+    "^bun\\s+run\\s+lint\\b"
+  ],
+  "build": [
+    "^tsc\\b.*--noEmit",
+    "^npm\\s+run\\s+build\\b",
+    "^vite\\s+build\\b",
+    "^bun\\s+run\\s+build\\b",
+    "^bun\\s+run\\s+typecheck\\b"
+  ],
+  "composite": {
+    "patterns": ["^preflight\\b"],
+    "expandsTo": ["test", "lint", "build"]
+  }
+}

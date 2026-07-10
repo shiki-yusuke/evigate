@@ -1,0 +1,9 @@
+{"type":"user","sessionId":"session-basic","cwd":"/Users/exampleuser/project","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"Please run the tests and fix any linter issues."}}
+{"type":"assistant","sessionId":"session-basic","cwd":"/Users/exampleuser/project","timestamp":"2026-01-01T00:00:01.000Z","version":"9.9.9","message":{"role":"assistant","content":[{"type":"text","text":"Sure, running tests now."},{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"npm test","description":"run tests"}}]}}
+{"type":"user","sessionId":"session-basic","cwd":"/Users/exampleuser/project","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"All 12 tests passed"}]}}
+{"type":"assistant","sessionId":"session-basic","cwd":"/Users/exampleuser/project","timestamp":"2026-01-01T00:00:03.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_2","name":"Edit","input":{"file_path":"/Users/exampleuser/project/src/index.ts","old_string":"a","new_string":"b"}}]}}
+{"type":"user","sessionId":"session-basic","cwd":"/Users/exampleuser/project","timestamp":"2026-01-01T00:00:04.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_2","content":"File edited successfully"}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:00:05.000Z","content":"synthetic queued note"}
+{"type":"system","subtype":"stop_hook_summary","timestamp":"2026-01-01T00:00:06.000Z"}
+{not valid json at all}
+{"type":"assistant","sessionId":"session-basic","cwd":"/Users/exampleuser/project","timestamp":"2026-01-01T00:00:07.000Z","message":{"role":"assistant","content":[{"type":"text","text":"All tests passed and the lint issue in index.ts was fixed. Task complete."}]}}

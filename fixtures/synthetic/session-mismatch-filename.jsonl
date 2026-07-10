@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"actual-content-session-id","cwd":"/Users/exampleuser/project","timestamp":"2026-01-06T00:00:00.000Z","message":{"role":"user","content":"Quick task."}}
+{"type":"assistant","sessionId":"actual-content-session-id","cwd":"/Users/exampleuser/project","timestamp":"2026-01-06T00:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}
