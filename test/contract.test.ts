@@ -71,4 +71,10 @@ describe("RuleBasedContractExtractor", () => {
     expect(contract.prohibitions).toHaveLength(1);
     expect(contract.prohibitions[0]!.paths).toEqual(["src/b.ts"]);
   });
+
+  it("F8: preserves the leading dot on dotfiles/dotdirs (e.g. .serena/project.yml), not just src/foo.ts style paths", () => {
+    const contract = extractor.extract([instructionEvent(".serena/project.yml は触らないでください。")]);
+    expect(contract.prohibitions).toHaveLength(1);
+    expect(contract.prohibitions[0]!.paths).toContain(".serena/project.yml");
+  });
 });

@@ -19,8 +19,12 @@ import { SessionSchema, EventSchema, ClaimSchema, VerdictSchema, type Event, typ
 import { assertNoResidualSecrets } from "./redact-audit.js";
 
 // 2026-07-10 修正ラウンド2: claims テーブルに cwd 列を追加（F2）したため 3 へ上げる。
+// Week 3 F8: claims テーブルに scope_subtype/paths 列を追加したため 4 へ上げる。
+// Week 3 F9: claims.kind の CHECK 制約に verification_done を追加したため 5 へ上げる。
+// Week 3 F10-4: claims テーブルに extractor_backend/extractor_model/extractor_prompt_version
+// 列を追加したため 6 へ上げる。
 // migration コードは書かない裁定のため、旧バージョンの DB は re-ingest を要求する。
-const DB_USER_VERSION = 3;
+const DB_USER_VERSION = 6;
 
 export interface SessionSummary {
   session_id: string;
@@ -140,9 +144,14 @@ export class Store {
         claim_id TEXT NOT NULL,
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         text TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('test_pass', 'lint_clean', 'build_ok', 'scope_respected', 'task_done')),
+        kind TEXT NOT NULL CHECK (kind IN ('test_pass', 'lint_clean', 'build_ok', 'scope_respected', 'task_done', 'verification_done')),
         turn INTEGER,
         cwd TEXT,
+        scope_subtype TEXT CHECK (scope_subtype IS NULL OR scope_subtype IN ('untouched', 'exclusive')),
+        paths TEXT,
+        extractor_backend TEXT,
+        extractor_model TEXT,
+        extractor_prompt_version TEXT,
         UNIQUE (session_id, claim_id)
       );
 
@@ -378,8 +387,24 @@ export class Store {
 
   getClaimsForSession(sessionId: string): Claim[] {
     const rows = this.db
-      .prepare(`SELECT claim_id AS id, session_id, text, kind, turn, cwd FROM claims WHERE session_id = ?`)
-      .all(sessionId) as { id: string; session_id: string; text: string; kind: Claim["kind"]; turn: number | null; cwd: string | null }[];
+      .prepare(
+        `SELECT claim_id AS id, session_id, text, kind, turn, cwd, scope_subtype, paths,
+                extractor_backend, extractor_model, extractor_prompt_version
+         FROM claims WHERE session_id = ?`,
+      )
+      .all(sessionId) as {
+      id: string;
+      session_id: string;
+      text: string;
+      kind: Claim["kind"];
+      turn: number | null;
+      cwd: string | null;
+      scope_subtype: Claim["scope_subtype"] | null;
+      paths: string | null;
+      extractor_backend: string | null;
+      extractor_model: string | null;
+      extractor_prompt_version: string | null;
+    }[];
     return rows.map((r) => ({
       id: r.id,
       session_id: r.session_id,
@@ -387,6 +412,11 @@ export class Store {
       kind: r.kind,
       turn: r.turn ?? undefined,
       cwd: r.cwd ?? undefined,
+      scope_subtype: r.scope_subtype ?? undefined,
+      paths: r.paths ? (JSON.parse(r.paths) as string[]) : undefined,
+      extractor_backend: r.extractor_backend ?? undefined,
+      extractor_model: r.extractor_model ?? undefined,
+      extractor_prompt_version: r.extractor_prompt_version ?? undefined,
     }));
   }
 
@@ -421,6 +451,9 @@ export class Store {
       }
       assertNoResidualSecrets(`claims.text[${sessionId}#${c.id}]`, c.text);
       assertNoResidualSecrets(`claims.cwd[${sessionId}#${c.id}]`, c.cwd);
+      for (const p of c.paths ?? []) assertNoResidualSecrets(`claims.paths[${sessionId}#${c.id}]`, p);
+      // extractor_backend/model/prompt_version は固定の内部識別子（"codex-exec"/"gpt-5.4" 等）
+      // であり、ユーザー由来の自由記述テキストではないため redaction 監査の対象外とする。
     }
     const claimIds = new Set(parsedClaims.map((c) => c.id));
     for (const v of parsedVerdicts) {
@@ -435,7 +468,10 @@ export class Store {
     const deleteClaims = this.db.prepare(`DELETE FROM claims WHERE session_id = ?`);
     const deleteVerdicts = this.db.prepare(`DELETE FROM verdicts WHERE session_id = ?`);
     const insertClaim = this.db.prepare(
-      `INSERT INTO claims (claim_id, session_id, text, kind, turn, cwd) VALUES (@claim_id, @session_id, @text, @kind, @turn, @cwd)`,
+      `INSERT INTO claims (claim_id, session_id, text, kind, turn, cwd, scope_subtype, paths,
+                           extractor_backend, extractor_model, extractor_prompt_version)
+       VALUES (@claim_id, @session_id, @text, @kind, @turn, @cwd, @scope_subtype, @paths,
+               @extractor_backend, @extractor_model, @extractor_prompt_version)`,
     );
     const insertVerdict = this.db.prepare(
       `INSERT INTO verdicts (session_id, claim_id, verdict, reason_code, evidence_refs) VALUES (@session_id, @claim_id, @verdict, @reason_code, @evidence_refs)`,
@@ -445,7 +481,19 @@ export class Store {
       deleteClaims.run(sessionId);
       deleteVerdicts.run(sessionId);
       for (const c of parsedClaims) {
-        insertClaim.run({ claim_id: c.id, session_id: c.session_id, text: c.text, kind: c.kind, turn: c.turn ?? null, cwd: c.cwd ?? null });
+        insertClaim.run({
+          claim_id: c.id,
+          session_id: c.session_id,
+          text: c.text,
+          kind: c.kind,
+          turn: c.turn ?? null,
+          cwd: c.cwd ?? null,
+          scope_subtype: c.scope_subtype ?? null,
+          paths: c.paths ? JSON.stringify(c.paths) : null,
+          extractor_backend: c.extractor_backend ?? null,
+          extractor_model: c.extractor_model ?? null,
+          extractor_prompt_version: c.extractor_prompt_version ?? null,
+        });
       }
       for (const v of parsedVerdicts) {
         insertVerdict.run({

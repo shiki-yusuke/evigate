@@ -129,22 +129,21 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`(^|/)${pattern}$`, "i");
 }
 
-/**
- * file_edit のパスが明示的な禁止事項に一致するか、宣言された scope_paths の外側かを判定する。
- * 簡易実装: glob をゆるい正規表現に変換し、file_edit の redacted_input の末尾に一致するかで判定する
- * （厳密な glob セマンティクスではない。Week 2 ルールベースの既知の限界）。
- */
-function violatesContract(filePath: string, contract: TaskContract): boolean {
-  for (const prohibition of contract.prohibitions) {
-    for (const pattern of prohibition.paths ?? []) {
-      if (globToRegExp(pattern).test(filePath)) return true;
-    }
-  }
-  if (contract.scope_paths.length > 0) {
-    const inScope = contract.scope_paths.some((p) => globToRegExp(p).test(filePath));
-    if (!inScope) return true;
-  }
-  return false;
+// F10-5（docs/reviews/2026-07-11-week3-codex.md 指摘5）: LLM は paths を「原文どおり」の
+// 表記で返す（buildPrompt 参照）。"only changed src/" のようにディレクトリ表記（末尾が "/"）
+// で返された場合、素の glob 末尾一致では "src/a.ts" に一致しない（"src/" は "/" で終わる
+// 文字列にしか一致しないため、実ファイルパスとは絶対に一致しない）。末尾が "/" のパスは
+// prefix glob（"src/" → "src/**"）に正規化してから照合する。
+// 注意: 拡張子や "/" が無い裸のディレクトリ名（例: "src"）はファイルシステムを見ないと
+// ディレクトリかどうか判定できず、判定に実行環境依存を持ち込むと検出器の決定論性が崩れる
+// ため対象外とする（末尾 "/" という構文的に曖昧さの無いケースのみを正規化する）。
+function normalizeScopePath(p: string): string {
+  return p.endsWith("/") ? `${p}**` : p;
+}
+
+/** claim.paths のいずれかの glob に filePath が一致するか（F10-5: ディレクトリ表記を正規化してから照合）。 */
+function matchesAnyPath(filePath: string, patterns: string[]): boolean {
+  return patterns.some((p) => globToRegExp(normalizeScopePath(p)).test(filePath));
 }
 
 function makeVerdict(claim: Claim, verdict: Verdict["verdict"], reasonCode: string, evidenceRefs: number[]): Verdict {
@@ -197,11 +196,36 @@ function evaluateTaskDoneClaim(claim: Claim, events: Event[]): Verdict {
   return makeVerdict(claim, "unknown", "NOT-PROVABLE", []);
 }
 
-/** D3: scope_respected claim の評価。違反なしでも proven は出さない（Bash 経由の変更は観測不能なため）。 */
-function evaluateScopeClaim(claim: Claim, events: Event[], contract: TaskContract): Verdict {
+/**
+ * D3: scope_respected claim の評価。違反なしでも proven は出さない（Bash 経由の変更は観測不能なため）。
+ *
+ * F8（Week 3 修正ラウンド、a71194ef の偽陽性対応）: scope_respected には意味論が逆の
+ * 2種類がある。
+ * - "untouched": 「P には触っていない」→ 反証は P への編集のみ（P 以外への編集は無関係）
+ * - "exclusive" : 「X のみ変更した/担当は X」→ 反証は X の外への編集
+ * 判別できない claim（scope_subtype または paths が無い）は D3 評価をスキップし
+ * unknown/D3-AMBIGUOUS とする。意味論を取り違えると偽陽性/偽陰性になる
+ * （実際に a71194ef で発生: 「`.serena/project.yml` には触っていない」という untouched
+ *  主張を、当時のコードは「宣言された scope の外に出たら違反」という exclusive 相当の
+ *  判定（instruction 由来 contract の prohibitions/scope_paths ベース）で評価しており、
+ *  無関係な正当な作業対象への編集を「範囲外」と誤って contradicted/D3 にしていた）。
+ *
+ * claim 自身の paths のみを根拠にする。instruction 由来の contract（prohibitions/scope_paths）
+ * とは混ぜない（contract は task_contract として従来どおり抽出されるが、D3 の claim 評価には
+ * 使わない。両者は情報源が異なり意味も異なるため）。
+ */
+function evaluateScopeClaim(claim: Claim, events: Event[]): Verdict {
+  if (!claim.scope_subtype || !claim.paths || claim.paths.length === 0) {
+    return makeVerdict(claim, "unknown", "D3-AMBIGUOUS", []);
+  }
+
   const beforeSeq = claim.turn!;
   const fileEdits = events.filter((e) => e.type === "file_edit" && e.seq < beforeSeq && e.redacted_input);
-  const violations = fileEdits.filter((e) => violatesContract(e.redacted_input!, contract));
+
+  const violations =
+    claim.scope_subtype === "untouched"
+      ? fileEdits.filter((e) => matchesAnyPath(e.redacted_input!, claim.paths!))
+      : fileEdits.filter((e) => !matchesAnyPath(e.redacted_input!, claim.paths!));
 
   if (violations.length > 0) {
     return makeVerdict(claim, "contradicted", "D3", violations.map((v) => v.seq));
@@ -211,6 +235,8 @@ function evaluateScopeClaim(claim: Claim, events: Event[], contract: TaskContrac
 
 /**
  * 1 claim を評価して verdict を返す。events は同一 session 内の全イベント（seq 昇順不問）。
+ * contract は D1/D2/D3 のいずれからも参照されない（F8: D3 は claim 自身の paths のみを
+ * 根拠にする）。呼び出し側（audit.ts/mutate.ts）のシグネチャ互換のため引数として残している。
  */
 export function evaluateClaim(claim: Claim, events: Event[], contract: TaskContract): Verdict {
   // F6: turn（report の seq）が無い claim は、未来のイベントまで証拠にしてしまう恐れがあるため
@@ -227,7 +253,12 @@ export function evaluateClaim(claim: Claim, events: Event[], contract: TaskContr
     case "task_done":
       return evaluateTaskDoneClaim(claim, events);
     case "scope_respected":
-      return evaluateScopeClaim(claim, events, contract);
+      return evaluateScopeClaim(claim, events);
+    case "verification_done":
+      // F9: 汎用検証主張（スポットチェック・手動確認・スクリプト検証・record 突合等）は
+      // 自動テストスイート実行と紐付けられないため D1〜D3 の評価対象外とし、常に
+      // unknown/NOT-PROVABLE を返す（対応する検証コマンドとの突合は将来設計）。
+      return makeVerdict(claim, "unknown", "NOT-PROVABLE", []);
   }
 }
 

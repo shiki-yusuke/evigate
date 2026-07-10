@@ -7,18 +7,31 @@
 // - claim は report イベントの cwd を保持する（F2、検出器が claim と同一 cwd の
 //   証拠のみを contradicted の根拠にするため）
 //
-// 抽出器は ClaimExtractor インターフェースにし、ルールベース実装のみ提供する
-// （LLM 実装は Week 3。今回はインターフェースのみで、スタブも置かない）。
+// 抽出器は ClaimExtractor インターフェースにし、ルールベース実装を提供する
+// （LLM 実装は Week 3, src/extractors/llm.ts の LlmClaimExtractor）。
 //
 // 既知の限界（ルールベースゆえの精度限界。LLM 抽出で改善予定）:
 // - 否定検出はマッチ前後の窓の簡易チェックのみ（複雑な文構造は見逃す/誤検知しうる）
 // - 同一 kind で複数箇所に言及があっても、最初に見つかった非否定マッチのみを採用する
+//
+// Week 3: extract() の戻り値を `Claim[] | Promise<Claim[]>` に広げた（LLM 抽出器は
+// プロセス起動/HTTP呼び出しを伴うため本質的に非同期。RuleBasedClaimExtractor は
+// これまでどおり同期のまま Claim[] を返す。呼び出し側（audit.ts）は常に await する）。
+//
+// Week 3 F8（a71194ef の偽陽性対応）: scope_respected には意味論が逆の2種類がある
+// （「P には触っていない」= untouched / 「X のみ変更した」= exclusive）。
+// マッチしたルールに scopeSubtype を持たせ、マッチを含む節（splitClauses で区切った
+// 文単位）からパス風トークンを抽出して claim.paths に載せる。節単位に限定するのは
+// contract.ts の F5 と同じ理由（隣接する無関係な節のパスを巻き込まないため）。
+// パスが1つも抽出できない場合は scope_subtype/paths を付けない
+// （detectors.ts 側で D3 評価をスキップし unknown/D3-AMBIGUOUS にする）。
 
 import { redact } from "./redact.js";
+import { extractPathTokens, findClauseContaining, splitClauses } from "./text-clauses.js";
 import type { Claim, Event } from "./schema.js";
 
 export interface ClaimExtractor {
-  extract(sessionId: string, reportEvents: Event[]): Claim[];
+  extract(sessionId: string, reportEvents: Event[]): Claim[] | Promise<Claim[]>;
 }
 
 interface Rule {
@@ -26,6 +39,8 @@ interface Rule {
   pattern: RegExp;
   // scope_respected は否定形そのものが claim の意味なので、否定ガードを適用しない
   skipNegationGuard?: boolean;
+  // scope_respected 専用: このルールがどちらの意味論かを示す。
+  scopeSubtype?: "untouched" | "exclusive";
 }
 
 // F4: ではない/ありません/ません/except/but/failing を追加。
@@ -51,13 +66,21 @@ const RULES: Rule[] = [
   { kind: "build_ok", pattern: /\b(build|tsc|typecheck)\b.{0,30}\b(succeed(ed)?|passed|success|no errors)\b/i },
 
   // scope_respected（否定形そのものが claim）
-  { kind: "scope_respected", pattern: /(触って(い)?ません|変更して(い)?ません|変更していない|編集して(い)?ません)/, skipNegationGuard: true },
+  // F8: 「P には触っていない」型（untouched）と「X のみ変更した」型（exclusive）は
+  // 反証条件が逆なので区別する。
+  {
+    kind: "scope_respected",
+    pattern: /(触って(い)?ません|変更して(い)?ません|変更していない|編集して(い)?ません)/,
+    skipNegationGuard: true,
+    scopeSubtype: "untouched",
+  },
   {
     kind: "scope_respected",
     pattern: /\b(did not|didn't|have not|haven't)\s+(touch(ed)?|modif(y|ied)|chang(e|ed)|edit(ed)?)\b/i,
     skipNegationGuard: true,
+    scopeSubtype: "untouched",
   },
-  { kind: "scope_respected", pattern: /\bonly changed\b/i, skipNegationGuard: true },
+  { kind: "scope_respected", pattern: /\bonly changed\b/i, skipNegationGuard: true, scopeSubtype: "exclusive" },
 
   // task_done
   // 実データ検証（2026-07-10）で判明: 実際の完了報告は「〜しました」の丁寧形より、
@@ -75,6 +98,16 @@ const RULES: Rule[] = [
   { kind: "task_done", pattern: /\btask\s+(is\s+)?(complete|completed|done)\b/i },
   { kind: "task_done", pattern: /\b(implementation|fix|feature)\s+(is\s+)?(complete|completed|done)\b/i },
   { kind: "task_done", pattern: /\bmerged\b/i },
+
+  // verification_done（F9）: 自動テストスイート（vitest/jest/pytest 等の runner 実行）とは
+  // 言えない、スポットチェック・手動確認・スクリプト検証・record 突合等の汎用検証主張。
+  // rules 抽出器の test_pass パターンは「テスト」「test(s)」という語を要求するため元々
+  // これらとは衝突しにくいが（F9 裁定どおり実影響は小さい）、taxonomy を揃えるために
+  // 対応する抽出ルールを用意する。
+  { kind: "verification_done", pattern: /スポットチェック/ },
+  { kind: "verification_done", pattern: /手動確認|目視確認/ },
+  { kind: "verification_done", pattern: /record.{0,15}(一致|突合)/i },
+  { kind: "verification_done", pattern: /\bverified\s*[:=]?\s*\d+\s*\/\s*\d+/i },
 ];
 
 function findFirstValidMatch(text: string, rule: Rule): RegExpMatchArray | undefined {
@@ -109,6 +142,7 @@ export class RuleBasedClaimExtractor implements ClaimExtractor {
     for (const reportEvent of reportEvents) {
       if (reportEvent.type !== "report" || !reportEvent.redacted_input) continue;
       const text = reportEvent.redacted_input;
+      const clauses = splitClauses(text);
 
       for (const rule of RULES) {
         const key = `${reportEvent.seq}:${rule.kind}`;
@@ -118,7 +152,7 @@ export class RuleBasedClaimExtractor implements ClaimExtractor {
         seenKinds.add(key);
 
         const context = redact(extractContext(text, match)).text;
-        claims.push({
+        const claim: Claim = {
           id: `${sessionId}#claim#${rule.kind}#${reportEvent.seq}`,
           session_id: sessionId,
           text: context,
@@ -126,7 +160,25 @@ export class RuleBasedClaimExtractor implements ClaimExtractor {
           kind: rule.kind,
           // F2: 検出器が claim と同一 cwd の証拠だけを見られるように、report イベントの cwd を引き継ぐ。
           cwd: reportEvent.cwd,
-        });
+          // F10-4: どの抽出器由来かを記録する（LlmClaimExtractor 側は backend/model/prompt_version
+          // を全て設定するが、ルールベースは決定的で「揺れ」が無いため extractor_backend のみ）。
+          extractor_backend: "rules",
+        };
+
+        if (rule.kind === "scope_respected" && rule.scopeSubtype) {
+          // F8: マッチを含む節（隣接する無関係な節を巻き込まない）からパス風トークンを拾う。
+          const idx = match.index ?? 0;
+          const clause = findClauseContaining(clauses, idx);
+          const paths = extractPathTokens(clause.text).map((p) => redact(p).text);
+          if (paths.length > 0) {
+            claim.scope_subtype = rule.scopeSubtype;
+            claim.paths = paths;
+          }
+          // パスが1つも抽出できない場合は subtype/paths を付けない
+          // （detectors.ts が D3 評価をスキップし unknown/D3-AMBIGUOUS にする）。
+        }
+
+        claims.push(claim);
       }
     }
 

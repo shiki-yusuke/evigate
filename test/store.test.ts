@@ -240,12 +240,36 @@ describe("Store", () => {
     expect(() => new Store(dbPath)).toThrow(/re-ingest|user_version/);
   });
 
+  it("rejects opening a DB from Week 3 F8 (user_version=3, pre claims.scope_subtype/paths columns)", () => {
+    const raw = new Database(dbPath);
+    raw.pragma("user_version = 3");
+    raw.close();
+
+    expect(() => new Store(dbPath)).toThrow(/re-ingest|user_version/);
+  });
+
+  it("rejects opening a DB from Week 3 F8 (user_version=4, pre claims.kind verification_done)", () => {
+    const raw = new Database(dbPath);
+    raw.pragma("user_version = 4");
+    raw.close();
+
+    expect(() => new Store(dbPath)).toThrow(/re-ingest|user_version/);
+  });
+
+  it("rejects opening a DB from Week 3 F9 (user_version=5, pre claims.extractor_backend/model/prompt_version columns)", () => {
+    const raw = new Database(dbPath);
+    raw.pragma("user_version = 5");
+    raw.close();
+
+    expect(() => new Store(dbPath)).toThrow(/re-ingest|user_version/);
+  });
+
   it("accepts a brand-new (user_version=0) DB file and initializes it at the current version", () => {
     const store = new Store(dbPath);
     store.close();
 
     const raw = new Database(dbPath);
-    expect(raw.pragma("user_version", { simple: true })).toBe(3);
+    expect(raw.pragma("user_version", { simple: true })).toBe(6);
     raw.close();
   });
 
@@ -292,6 +316,66 @@ describe("Store", () => {
     store.saveAuditResult(sessionId, [], []);
     expect(store.getClaimsForSession(sessionId)).toHaveLength(0);
     expect(store.getVerdictsForSession(sessionId)).toHaveLength(0);
+
+    store.close();
+  });
+
+  it("F8: persists and round-trips claim.scope_subtype/paths", () => {
+    const store = new Store(dbPath);
+    const sessionId = "sess-1";
+    store.upsertSession(makeSession(sessionId), makeEvents(sessionId), FULL_EXTRA);
+
+    store.saveAuditResult(
+      sessionId,
+      [
+        {
+          id: "c1",
+          session_id: sessionId,
+          text: ".serena/project.yml には触っていません",
+          turn: 3,
+          kind: "scope_respected",
+          scope_subtype: "untouched",
+          paths: [".serena/project.yml"],
+        },
+      ],
+      [{ session_id: sessionId, claim_id: "c1", verdict: "unknown", reason_code: "D3-LIMITED", evidence_refs: [] }],
+    );
+
+    const claims = store.getClaimsForSession(sessionId);
+    expect(claims).toHaveLength(1);
+    expect(claims[0]!.scope_subtype).toBe("untouched");
+    expect(claims[0]!.paths).toEqual([".serena/project.yml"]);
+
+    store.close();
+  });
+
+  it("F10-4: persists and round-trips claim.extractor_backend/extractor_model/extractor_prompt_version", () => {
+    const store = new Store(dbPath);
+    const sessionId = "sess-1";
+    store.upsertSession(makeSession(sessionId), makeEvents(sessionId), FULL_EXTRA);
+
+    store.saveAuditResult(
+      sessionId,
+      [
+        {
+          id: "c1",
+          session_id: sessionId,
+          text: "All tests passed.",
+          turn: 3,
+          kind: "test_pass",
+          extractor_backend: "codex-exec",
+          extractor_model: "gpt-5.4",
+          extractor_prompt_version: "llm-v1",
+        },
+      ],
+      [{ session_id: sessionId, claim_id: "c1", verdict: "proven", reason_code: "D1", evidence_refs: [0, 2] }],
+    );
+
+    const claims = store.getClaimsForSession(sessionId);
+    expect(claims).toHaveLength(1);
+    expect(claims[0]!.extractor_backend).toBe("codex-exec");
+    expect(claims[0]!.extractor_model).toBe("gpt-5.4");
+    expect(claims[0]!.extractor_prompt_version).toBe("llm-v1");
 
     store.close();
   });

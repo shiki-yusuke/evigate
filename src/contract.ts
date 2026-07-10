@@ -7,8 +7,13 @@
 // 抽出できなければ空 contract を返す（D3 は発火しない、12 の規約どおり）。
 // prohibitions はパス風トークンが抽出できた場合のみ登録する（パスなしの抽象的な
 // 「触るな」宣言は D3 の判定材料にできないため）。
+//
+// Week 3 F8: 節分割・パストークン抽出（splitClauses/findClauseContaining/extractPathTokens）は
+// src/text-clauses.ts に切り出した（src/claims.ts の scope_respected 対象パス抽出でも
+// 同じロジックが必要になったため）。本ファイルの挙動は変更していない。
 
 import { redact } from "./redact.js";
+import { extractPathTokens, findClauseContaining, splitClauses } from "./text-clauses.js";
 import type { Event, Obligation, Prohibition, TaskContract } from "./schema.js";
 
 export interface ContractExtractor {
@@ -39,40 +44,6 @@ const OBLIGATION_RULES: ObligationRule[] = [
   { pattern: /preflight.{0,5}(を)?通(す|して|すこと)/gi, kind: "behavior" },
   { pattern: /\brun\s+(the\s+)?preflight\b/gi, kind: "behavior" },
 ];
-
-// "src/foo/**" のようなパス/glob、または "package.json" のような拡張子付きファイル名。
-// 末尾のドット区切りセグメントを明示的な繰り返しにして、文末の句点「.」を
-// トークンへ誤って取り込まないようにしている（例: "old.ts." → "old.ts" のみ抽出）。
-const PATH_TOKEN_RE = /(?:[\w-]+\/)+(?:\*\*|\*|[\w-]+(?:\.[\w-]+)*)|\b[\w-]+(?:\.[\w-]+)+\b/g;
-
-interface Clause {
-  text: string;
-  start: number;
-  end: number;
-}
-
-/** テキストを 。/改行/、 で節に分割する（F5: 禁止表現の抽出範囲を節単位に限定するため）。 */
-function splitClauses(text: string): Clause[] {
-  const clauses: Clause[] = [];
-  const delimiterRe = /[。\n、]/g;
-  let start = 0;
-  let m: RegExpExecArray | null;
-  while ((m = delimiterRe.exec(text)) !== null) {
-    clauses.push({ text: text.slice(start, m.index), start, end: m.index });
-    start = m.index + 1;
-  }
-  clauses.push({ text: text.slice(start), start, end: text.length });
-  return clauses;
-}
-
-function findClauseContaining(clauses: Clause[], index: number): Clause {
-  return clauses.find((c) => index >= c.start && index < c.end) ?? clauses[clauses.length - 1]!;
-}
-
-function extractPathTokens(text: string): string[] {
-  const tokens = text.match(PATH_TOKEN_RE) ?? [];
-  return [...new Set(tokens)];
-}
 
 export class RuleBasedContractExtractor implements ContractExtractor {
   extract(instructionEvents: Event[]): TaskContract {

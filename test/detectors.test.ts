@@ -4,8 +4,22 @@ import type { Claim, Event, TaskContract } from "../src/schema.js";
 
 const EMPTY_CONTRACT: TaskContract = { obligations: [], prohibitions: [], scope_paths: [] };
 
-function claim(kind: Claim["kind"], turn: number | undefined, cwd?: string): Claim {
-  return { id: `c-${kind}-${turn}`, session_id: "sess-1", text: "claim text", turn, kind, cwd };
+function claim(
+  kind: Claim["kind"],
+  turn: number | undefined,
+  cwd?: string,
+  scope?: { subtype?: Claim["scope_subtype"]; paths?: string[] },
+): Claim {
+  return {
+    id: `c-${kind}-${turn}`,
+    session_id: "sess-1",
+    text: "claim text",
+    turn,
+    kind,
+    cwd,
+    scope_subtype: scope?.subtype,
+    paths: scope?.paths,
+  };
 }
 
 function commandEvent(seq: number, opts: Partial<Event> = {}): Event {
@@ -212,11 +226,27 @@ describe("evaluateClaim — F3 (composite failure attribution)", () => {
 describe("evaluateClaim — F6 (missing claim.turn)", () => {
   it("unknown/NO-ANCHOR when claim.turn is undefined, regardless of available evidence", () => {
     const events = [commandEvent(1, { outcome: { status: "ok" } })];
-    for (const kind of ["test_pass", "lint_clean", "build_ok", "task_done", "scope_respected"] as const) {
+    for (const kind of ["test_pass", "lint_clean", "build_ok", "task_done", "scope_respected", "verification_done"] as const) {
       const v = evaluateClaim(claim(kind, undefined), events, EMPTY_CONTRACT);
       expect(v.verdict).toBe("unknown");
       expect(v.reason_code).toBe("NO-ANCHOR");
     }
+  });
+});
+
+describe("evaluateClaim — F9 (verification_done, evaluated outside D1-D3)", () => {
+  it("always unknown/NOT-PROVABLE regardless of surrounding evidence (never proven, never contradicted)", () => {
+    const noEvidence = evaluateClaim(claim("verification_done", 10), [], EMPTY_CONTRACT);
+    expect(noEvidence.verdict).toBe("unknown");
+    expect(noEvidence.reason_code).toBe("NOT-PROVABLE");
+
+    const withSuccess = evaluateClaim(claim("verification_done", 10), [commandEvent(1, { outcome: { status: "ok" } })], EMPTY_CONTRACT);
+    expect(withSuccess.verdict).toBe("unknown");
+    expect(withSuccess.reason_code).toBe("NOT-PROVABLE");
+
+    const withFailure = evaluateClaim(claim("verification_done", 10), [commandEvent(1, { outcome: { status: "error" } })], EMPTY_CONTRACT);
+    expect(withFailure.verdict).toBe("unknown");
+    expect(withFailure.reason_code).toBe("NOT-PROVABLE");
   });
 });
 
@@ -252,61 +282,97 @@ describe("evaluateClaim — D2 (task_done)", () => {
   });
 });
 
-describe("evaluateClaim — D3 (scope_respected)", () => {
-  it("contradicted D3 when a file_edit matches a prohibition path", () => {
-    const contract: TaskContract = {
-      obligations: [],
-      prohibitions: [{ id: "p1", text: "do not touch src/legacy/**", paths: ["src/legacy/**"] }],
-      scope_paths: [],
-    };
-    const events = [fileEditEvent(1, "/Users/USER/repo/src/legacy/old.ts")];
-    const v = evaluateClaim(claim("scope_respected", 10), events, contract);
+describe("evaluateClaim — D3 (scope_respected) — F8: untouched/exclusive subtype", () => {
+  // F8 裁定の回帰ケース (a)〜(d)。a71194ef の偽陽性（untouched 主張を exclusive として
+  // 評価し、正当な作業対象への編集を「範囲外」と誤って contradicted にしていた）の再発防止。
+
+  it("F8 (a): untouched claim + edit only outside the claimed path -> unknown/D3-LIMITED (not contradicted)", () => {
+    const c = claim("scope_respected", 10, undefined, { subtype: "untouched", paths: [".serena/project.yml"] });
+    const events = [fileEditEvent(1, "/Users/USER/repo/src/useVariableMonitors/index.ts")];
+    const v = evaluateClaim(c, events, EMPTY_CONTRACT);
+    expect(v.verdict).toBe("unknown");
+    expect(v.reason_code).toBe("D3-LIMITED");
+  });
+
+  it("F8 (b): untouched claim + edit to the claimed path itself -> contradicted/D3", () => {
+    const c = claim("scope_respected", 10, undefined, { subtype: "untouched", paths: [".serena/project.yml"] });
+    const events = [fileEditEvent(1, "/Users/USER/repo/.serena/project.yml")];
+    const v = evaluateClaim(c, events, EMPTY_CONTRACT);
     expect(v.verdict).toBe("contradicted");
     expect(v.reason_code).toBe("D3");
     expect(v.evidence_refs).toContain(1);
   });
 
-  it("contradicted D3 when a file_edit falls outside declared scope_paths", () => {
-    const contract: TaskContract = { obligations: [], prohibitions: [], scope_paths: ["src/feature-a/**"] };
+  it('F8 (c): exclusive claim ("only changed X") + edit outside X -> contradicted/D3', () => {
+    const c = claim("scope_respected", 10, undefined, { subtype: "exclusive", paths: ["src/feature-a/**"] });
     const events = [fileEditEvent(1, "/Users/USER/repo/src/feature-b/index.ts")];
-    const v = evaluateClaim(claim("scope_respected", 10), events, contract);
+    const v = evaluateClaim(c, events, EMPTY_CONTRACT);
     expect(v.verdict).toBe("contradicted");
     expect(v.reason_code).toBe("D3");
   });
 
-  it("never returns proven — no violation found means unknown/D3-LIMITED", () => {
-    const contract: TaskContract = {
-      obligations: [],
-      prohibitions: [{ id: "p1", text: "do not touch src/legacy/**", paths: ["src/legacy/**"] }],
-      scope_paths: [],
-    };
-    const events = [fileEditEvent(1, "/Users/USER/repo/src/feature/index.ts")];
-    const v = evaluateClaim(claim("scope_respected", 10), events, contract);
+  it("exclusive claim + edit inside the declared scope -> unknown/D3-LIMITED (not proven)", () => {
+    const c = claim("scope_respected", 10, undefined, { subtype: "exclusive", paths: ["src/feature-a/**"] });
+    const events = [fileEditEvent(1, "/Users/USER/repo/src/feature-a/index.ts")];
+    const v = evaluateClaim(c, events, EMPTY_CONTRACT);
     expect(v.verdict).toBe("unknown");
     expect(v.reason_code).toBe("D3-LIMITED");
   });
 
-  it("D3-LIMITED (not proven) when the contract has no prohibitions or scope_paths at all", () => {
+  it("F8 (d): subtype unknown -> unknown/D3-AMBIGUOUS, D3 evaluation skipped entirely", () => {
+    const c = claim("scope_respected", 10); // scope_subtype/paths 無し
     const events = [fileEditEvent(1, "/Users/USER/repo/src/anything.ts")];
-    const v = evaluateClaim(claim("scope_respected", 10), events, EMPTY_CONTRACT);
+    const v = evaluateClaim(c, events, EMPTY_CONTRACT);
     expect(v.verdict).toBe("unknown");
-    expect(v.reason_code).toBe("D3-LIMITED");
+    expect(v.reason_code).toBe("D3-AMBIGUOUS");
+  });
+
+  it("subtype はあるが paths が空 -> unknown/D3-AMBIGUOUS（判別不能として扱う）", () => {
+    const c = claim("scope_respected", 10, undefined, { subtype: "untouched", paths: [] });
+    const events = [fileEditEvent(1, "/Users/USER/repo/src/anything.ts")];
+    const v = evaluateClaim(c, events, EMPTY_CONTRACT);
+    expect(v.verdict).toBe("unknown");
+    expect(v.reason_code).toBe("D3-AMBIGUOUS");
+  });
+
+  it("never returns proven for scope_respected regardless of subtype", () => {
+    const untouched = claim("scope_respected", 10, undefined, { subtype: "untouched", paths: ["a.ts"] });
+    const exclusive = claim("scope_respected", 10, undefined, { subtype: "exclusive", paths: ["a.ts"] });
+    for (const c of [untouched, exclusive]) {
+      const v = evaluateClaim(c, [], EMPTY_CONTRACT);
+      expect(v.verdict).not.toBe("proven");
+    }
   });
 
   it("F5: glob matching is anchored to path boundaries (src/a.ts must not match src/a.ts.bak)", () => {
-    const contract: TaskContract = {
-      obligations: [],
-      prohibitions: [{ id: "p1", text: "do not touch src/a.ts", paths: ["src/a.ts"] }],
-      scope_paths: [],
-    };
+    const c = claim("scope_respected", 10, undefined, { subtype: "untouched", paths: ["src/a.ts"] });
     const backupFile = [fileEditEvent(1, "/Users/USER/repo/src/a.ts.bak")];
-    const notViolated = evaluateClaim(claim("scope_respected", 10), backupFile, contract);
+    const notViolated = evaluateClaim(c, backupFile, EMPTY_CONTRACT);
     expect(notViolated.verdict).toBe("unknown");
     expect(notViolated.reason_code).toBe("D3-LIMITED");
 
     const exactFile = [fileEditEvent(1, "/Users/USER/repo/src/a.ts")];
-    const violated = evaluateClaim(claim("scope_respected", 10), exactFile, contract);
+    const violated = evaluateClaim(c, exactFile, EMPTY_CONTRACT);
     expect(violated.verdict).toBe("contradicted");
     expect(violated.reason_code).toBe("D3");
+  });
+
+  it("F10-5: directory-style path (\"src/\") is normalized to a prefix glob, so exclusive claims cover files under it", () => {
+    // LLM は paths を原文どおり返すため "only changed src/" は paths=["src/"] になりうる。
+    // 正規化前は "src/" が末尾一致glob（"src/"で終わる文字列にしか一致しない = 実ファイルには
+    // 絶対に一致しない）として扱われ、src/a.ts への正当な編集が誤って contradicted/D3 になっていた。
+    const c = claim("scope_respected", 10, undefined, { subtype: "exclusive", paths: ["src/"] });
+    const insideDir = [fileEditEvent(1, "/Users/USER/repo/src/a.ts")];
+    const v = evaluateClaim(c, insideDir, EMPTY_CONTRACT);
+    expect(v.verdict).toBe("unknown");
+    expect(v.reason_code).toBe("D3-LIMITED");
+  });
+
+  it("F10-5: directory-style path (\"src/\") for untouched claims also covers edits inside the directory", () => {
+    const c = claim("scope_respected", 10, undefined, { subtype: "untouched", paths: ["src/"] });
+    const insideDir = [fileEditEvent(1, "/Users/USER/repo/src/a.ts")];
+    const v = evaluateClaim(c, insideDir, EMPTY_CONTRACT);
+    expect(v.verdict).toBe("contradicted");
+    expect(v.reason_code).toBe("D3");
   });
 });

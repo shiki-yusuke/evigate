@@ -111,10 +111,30 @@ export const ClaimSchema = z.object({
   text: z.string(),
   turn: z.number().int().optional(),
   // R7: build_ok を追加（command/obligation の kind には既に build があり整合させる）。
-  kind: z.enum(["test_pass", "lint_clean", "build_ok", "scope_respected", "task_done"]),
+  // F9（Week 3 修正ラウンド、LLM 抽出の kind 誤分類対応）: verification_done を追加。
+  // スポットチェック・手動確認・スクリプト検証・record 突合等、自動テストスイート
+  // （vitest/jest/pytest 等の runner 実行）とは言えない汎用の検証主張を指す。
+  // D1〜D3 の評価対象外（対応する検証コマンドとの突合は将来設計）で、常に
+  // unknown/NOT-PROVABLE とする。
+  kind: z.enum(["test_pass", "lint_clean", "build_ok", "scope_respected", "task_done", "verification_done"]),
   // F2（Week 2 修正ラウンド2）: report イベントの cwd を保持する。検出器が
   // 「claim と同一 cwd の未解決失敗のみを contradicted の根拠にする」ために必須。
   cwd: z.string().optional(),
+  // F8（Week 3 修正ラウンド、a71194ef の偽陽性対応）: scope_respected claim には
+  // 意味論が逆の2種類がある。
+  // - "untouched": 「P には触っていない」→ 反証は P への編集のみ（P 以外は無関係）
+  // - "exclusive" : 「X のみ変更した/担当は X」→ 反証は X の外への編集
+  // 判別できない claim（subtype または paths が無い）は D3 評価をスキップし、
+  // unknown/D3-AMBIGUOUS とする（意味論を取り違えた誤判定を避けるため）。
+  scope_subtype: z.enum(["untouched", "exclusive"]).optional(),
+  paths: z.array(z.string()).optional(),
+  // F10-4（Week 3 修正ラウンド、LLM grounding レビュー対応）: どの抽出器・モデル・
+  // プロンプト版で生成された claim かを記録する。LLM 抽出は非決定的なため
+  // （docs/llm-extractor-notes.md）、揺れの原因追跡に必須。RuleBasedClaimExtractor は
+  // extractor_backend="rules" のみを設定する（model/prompt_version は無し）。
+  extractor_backend: z.string().optional(),
+  extractor_model: z.string().optional(),
+  extractor_prompt_version: z.string().optional(),
 });
 export type Claim = z.infer<typeof ClaimSchema>;
 

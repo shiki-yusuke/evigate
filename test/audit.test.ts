@@ -26,7 +26,7 @@ describe("auditSession (integration)", () => {
     const store = new Store(dbPath);
     await ingestFile(path.join(FIXTURES_DIR, "session-instruction.jsonl"), store);
 
-    const result = auditSession(store, "session-instruction");
+    const result = await auditSession(store, "session-instruction");
 
     expect(result.contract.scope_paths).toContain("src/foo/**");
     expect(result.contract.prohibitions.some((p) => p.paths?.includes("src/secret/config.ts"))).toBe(true);
@@ -53,8 +53,8 @@ describe("auditSession (integration)", () => {
     const store = new Store(dbPath);
     await ingestFile(path.join(FIXTURES_DIR, "session-instruction.jsonl"), store);
 
-    auditSession(store, "session-instruction");
-    const secondResult = auditSession(store, "session-instruction");
+    await auditSession(store, "session-instruction");
+    const secondResult = await auditSession(store, "session-instruction");
 
     const persistedClaims = store.getClaimsForSession("session-instruction");
     expect(persistedClaims.length).toBe(secondResult.claims.length);
@@ -68,7 +68,7 @@ describe("auditSession (integration)", () => {
     // どの claim パターンにも一致しない（"task"/"implementation"/"fix"/"feature" を伴わない）。
     await ingestFile(path.join(FIXTURES_DIR, "session-command-classification.jsonl"), store);
 
-    const result = auditSession(store, "session-command-classification");
+    const result = await auditSession(store, "session-command-classification");
     expect(result.claims).toHaveLength(0);
     const markdown = formatAuditMarkdown(result);
     expect(markdown).toContain("no claims extracted");
@@ -79,7 +79,7 @@ describe("auditSession (integration)", () => {
   it("produces JSON that round-trips the verdict schema shape", async () => {
     const store = new Store(dbPath);
     await ingestFile(path.join(FIXTURES_DIR, "session-instruction.jsonl"), store);
-    const result = auditSession(store, "session-instruction");
+    const result = await auditSession(store, "session-instruction");
 
     const json = JSON.parse(formatAuditJson(result));
     expect(json.session_id).toBe("session-instruction");
@@ -93,7 +93,7 @@ describe("auditSession (integration)", () => {
   it("markdown report includes verdict badges and evidence source lines for human verification", async () => {
     const store = new Store(dbPath);
     await ingestFile(path.join(FIXTURES_DIR, "session-instruction.jsonl"), store);
-    const result = auditSession(store, "session-instruction");
+    const result = await auditSession(store, "session-instruction");
 
     const markdown = formatAuditMarkdown(result);
     expect(markdown).toMatch(/proven|contradicted|unknown/);

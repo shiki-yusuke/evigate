@@ -38,6 +38,71 @@ describe("RuleBasedClaimExtractor", () => {
     expect(en.find((c) => c.kind === "scope_respected")).toBeDefined();
   });
 
+  describe("F8: scope_respected subtype/paths extraction", () => {
+    it('tags "did not touch" phrasing as untouched with the mentioned path', () => {
+      const claims = extractor.extract("sess-1", [reportEvent("`.serena/project.yml` には触っていません。")]);
+      const c = claims.find((c) => c.kind === "scope_respected");
+      expect(c?.scope_subtype).toBe("untouched");
+      expect(c?.paths).toContain(".serena/project.yml");
+    });
+
+    it('tags "only changed" phrasing as exclusive', () => {
+      const claims = extractor.extract("sess-1", [reportEvent("only changed src/index.ts, nothing else.")]);
+      const c = claims.find((c) => c.kind === "scope_respected");
+      expect(c?.scope_subtype).toBe("exclusive");
+    });
+
+    it("F8 regression (a71194ef shape): only pulls paths from the clause containing the match, not unrelated clauses", () => {
+      // 実 corpus で発生したバグの再現: 変更ファイル一覧（別節）と「不触」宣言（別節）が
+      // 同じ report 内にある場合、変更ファイル一覧のパスを untouched claim の paths に
+      // 巻き込んではいけない。
+      const text = "変更ファイル: src/useVariableMonitors/index.ts、src/foo.ts。`.serena/project.yml` には触っていません。";
+      const claims = extractor.extract("sess-1", [reportEvent(text)]);
+      const c = claims.find((cl) => cl.kind === "scope_respected");
+      expect(c?.scope_subtype).toBe("untouched");
+      expect(c?.paths).toEqual([".serena/project.yml"]);
+      expect(c?.paths).not.toContain("src/useVariableMonitors/index.ts");
+      expect(c?.paths).not.toContain("src/foo.ts");
+    });
+
+    it("does not set scope_subtype/paths when no path-like token is found near the match", () => {
+      const claims = extractor.extract("sess-1", [reportEvent("それ以外は変更していません。")]);
+      const c = claims.find((cl) => cl.kind === "scope_respected");
+      expect(c).toBeDefined();
+      expect(c?.scope_subtype).toBeUndefined();
+      expect(c?.paths).toBeUndefined();
+    });
+
+    it('F10-5: an English ", but" clause boundary keeps the untouched path scoped to its own clause', () => {
+      // 修正前は節区切りが日本語の 。/改行/、 のみで、", but" で区切れずに1節のまま扱われ、
+      // b.ts（正当な編集対象）が a.ts の untouched claim の paths に巻き込まれていた。
+      const claims = extractor.extract("sess-1", [reportEvent("did not touch a.ts, but changed b.ts.")]);
+      const c = claims.find((cl) => cl.kind === "scope_respected");
+      expect(c?.scope_subtype).toBe("untouched");
+      expect(c?.paths).toEqual(["a.ts"]);
+      expect(c?.paths).not.toContain("b.ts");
+    });
+  });
+
+  describe("F9: verification_done vs test_pass taxonomy", () => {
+    it('classifies "スポットチェック: record 62/37 一致" as verification_done, not test_pass', () => {
+      const claims = extractor.extract("sess-1", [reportEvent("スポットチェック: record 62/37 一致しました。")]);
+      expect(claims.find((c) => c.kind === "verification_done")).toBeDefined();
+      expect(claims.find((c) => c.kind === "test_pass")).toBeUndefined();
+    });
+
+    it('classifies "verified=4/4 failed=0" as verification_done, not test_pass', () => {
+      const claims = extractor.extract("sess-1", [reportEvent("[syncbot-sync] verified=4/4 failed=0")]);
+      expect(claims.find((c) => c.kind === "verification_done")).toBeDefined();
+      expect(claims.find((c) => c.kind === "test_pass")).toBeUndefined();
+    });
+
+    it("still classifies an actual automated test-suite run as test_pass", () => {
+      const claims = extractor.extract("sess-1", [reportEvent("All tests passed.")]);
+      expect(claims.find((c) => c.kind === "test_pass")).toBeDefined();
+    });
+  });
+
   it("extracts task_done", () => {
     const claims = extractor.extract("sess-1", [reportEvent("実装しました。完了しました。")]);
     expect(claims.find((c) => c.kind === "task_done")).toBeDefined();

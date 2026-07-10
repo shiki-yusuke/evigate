@@ -4,7 +4,13 @@ dist/
 *.db-journal
 *.db-wal
 *.db-shm
+*.db.bak*
+# F10-7 追補: "evigate.db.bak-v3" のような "*.db.bak*" だけでなく、
+# "evigate.db-shm.bak" / "evigate.db-wal.bak" のように .bak が末尾に付く命名も
+# 実際に発生した（*.db.bak* にはマッチしない）。DB由来のバックアップ全般を広く拾う。
+*.bak
 fixtures/real/
 .DS_Store
 *.log
 .serena/
+mutations/

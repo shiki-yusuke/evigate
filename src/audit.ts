@@ -1,7 +1,17 @@
 // `evigate audit` のオーケストレーション: イベント読込 → contract/claim 抽出 → 検出器評価 → 保存 → レポート整形。
+//
+// Week 3: claim 抽出器を差し替え可能にした（既定は RuleBasedClaimExtractor、
+// `--extractor llm` で LlmClaimExtractor に切替。src/extractors/llm.ts 参照）。
+// LLM 抽出はプロセス起動/HTTP呼び出しを伴い本質的に非同期のため、auditSession 自体を
+// async 化した（ClaimExtractor.extract の戻り値を Claim[] | Promise<Claim[]> に広げた
+// ことに伴う、想定内の必然的な変更。呼び出し側は cli.ts の audit コマンドと
+// mutation-eval.ts。いずれも await 済み）。
+// 保存前の redaction 監査（Store.saveAuditResult 内の assertNoResidualSecrets）は
+// 抽出器の種類によらず必ず通るため、LLM 応答由来の claims.text/cwd も同じ経路で検査される。
 
 import { RuleBasedContractExtractor } from "./contract.js";
 import { RuleBasedClaimExtractor } from "./claims.js";
+import type { ClaimExtractor } from "./claims.js";
 import { evaluateClaims } from "./detectors.js";
 import type { Store } from "./store.js";
 import type { Claim, Event, TaskContract, Verdict } from "./schema.js";
@@ -15,18 +25,20 @@ export interface AuditResult {
 }
 
 const contractExtractor = new RuleBasedContractExtractor();
-const claimExtractor = new RuleBasedClaimExtractor();
+const defaultClaimExtractor = new RuleBasedClaimExtractor();
 
 /**
  * 1 セッションを audit する。claims/verdicts は Store に保存する（再 audit で置き換え）。
+ * `options.extractor` を渡すと claim 抽出器を差し替えられる（既定は RuleBasedClaimExtractor）。
  */
-export function auditSession(store: Store, sessionId: string): AuditResult {
+export async function auditSession(store: Store, sessionId: string, options: { extractor?: ClaimExtractor } = {}): Promise<AuditResult> {
+  const extractor = options.extractor ?? defaultClaimExtractor;
   const events = store.getEventsForSession(sessionId);
   const instructionEvents = events.filter((e) => e.type === "instruction");
   const reportEvents = events.filter((e) => e.type === "report");
 
   const contract = contractExtractor.extract(instructionEvents);
-  const claims = claimExtractor.extract(sessionId, reportEvents);
+  const claims = await extractor.extract(sessionId, reportEvents);
   const verdicts = evaluateClaims(claims, events, contract);
 
   store.saveAuditResult(sessionId, claims, verdicts);
