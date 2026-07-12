@@ -43,7 +43,7 @@ describe("exportAllSessions / writeExportOutputs", () => {
   let outDir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(path.join(tmpdir(), "evigate-export-runner-test-"));
+    dir = mkdtempSync(path.join(tmpdir(), "evigate-export-io-test-"));
     dbPath = path.join(dir, "test.db");
     rawDir = path.join(dir, "raw");
     outDir = path.join(dir, "out");
