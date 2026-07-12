@@ -10,8 +10,8 @@ describe("redact", () => {
   });
 
   it("masks Claude Code's encoded path form (-Users-<name>-)", () => {
-    const result = redact("project=-Users-alice-work-auto-pr-review-helper");
-    expect(result.text).toBe("project=-Users-USER-work-auto-pr-review-helper");
+    const result = redact("project=-Users-alice-my-project");
+    expect(result.text).toBe("project=-Users-USER-my-project");
     expect(result.count).toBe(1);
   });
 
@@ -26,12 +26,12 @@ describe("redact", () => {
     expect(redact(grepArg).text).not.toContain(username);
   });
 
-  it("masks the current OS username even underscore-joined and case-varied (e.g. 'shiki_yusuke_A13714')", () => {
+  it("masks the current OS username even underscore-joined and case-varied (e.g. 'dev_team_ALICE')", () => {
     const username = userInfo().username;
-    const compound = `shiki_yusuke_${username.toUpperCase()}, [REDACTED_EMAIL]`;
+    const compound = `dev_team_${username.toUpperCase()}, [REDACTED_EMAIL]`;
     const result = redact(compound);
     expect(result.text.toLowerCase()).not.toContain(username.toLowerCase());
-    expect(result.text).toBe("shiki_yusuke_USER, [REDACTED_EMAIL]");
+    expect(result.text).toBe("dev_team_USER, [REDACTED_EMAIL]");
   });
 
   // Week 4（匿名化コーパス実体化）で実 corpus から発見: `evigate export-corpus` は JSON 行の
@@ -51,7 +51,7 @@ describe("redact", () => {
   it("still rejects a real alphanumeric prefix as a word boundary violation (no over-masking regression)", () => {
     const username = userInfo().username;
     // "x" + username は依然として1つの識別子とみなし、単独の bare word としてはマスクしない
-    // （既存の "shiki_yusuke_A13714" 型テストと同様、境界条件そのものは変えていないことの確認）。
+    // （既存の "dev_team_ALICE" 型テストと同様、境界条件そのものは変えていないことの確認）。
     const result = redact(`prefixed${username}suffixed and standalone ${username} here`);
     expect(result.text).toContain(`prefixed${username}suffixed`);
     expect(result.text).toContain("standalone USER here");

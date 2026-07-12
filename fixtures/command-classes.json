@@ -1,5 +1,5 @@
 {
-  "_comment": "出典: prompts/05-dev-tool-ideas/12-corpus-and-fixtures.md のコマンド分類辞書。各パターンは「コマンドをシェル区切り(&&, ;, 改行, |, ||)で分割したセグメントの先頭」にのみアンカーする（^）。echo/rg/grep/cat/sed 等の引数内の文字列を誤って拾わないようにするため。composite は test+lint+build の複合として扱う。bun/bunx は実コーパス（example-app）で多用されるため npm/pnpm/yarn/npx と並記した（2026-07-10 レビュー修正時、および Week 2 の実データ検証で bunx 抜けを追加発見・修正）。",
+  "_comment": "出典: prompts/05-dev-tool-ideas/12-corpus-and-fixtures.md のコマンド分類辞書。各パターンは「コマンドをシェル区切り(&&, ;, 改行, |, ||)で分割したセグメントの先頭」にのみアンカーする（^）。echo/rg/grep/cat/sed 等の引数内の文字列を誤って拾わないようにするため。composite は test+lint+build の複合として扱う。bun/bunx は実コーパスで多用されるため npm/pnpm/yarn/npx と並記した（2026-07-10 レビュー修正時、および Week 2 の実データ検証で bunx 抜けを追加発見・修正）。",
   "test": [
     "^(npx\\s+)?vitest\\b",
     "^(npx\\s+)?jest\\b",
