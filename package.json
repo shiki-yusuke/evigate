@@ -17,11 +17,11 @@
   "author": "shiki-yusuke",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/evigate.git"
+    "url": "git+https://github.com/shiki-yusuke/evigate.git"
   },
-  "homepage": "https://github.com/OWNER/evigate#readme",
+  "homepage": "https://github.com/shiki-yusuke/evigate#readme",
   "bugs": {
-    "url": "https://github.com/OWNER/evigate/issues"
+    "url": "https://github.com/shiki-yusuke/evigate/issues"
   },
   "type": "module",
   "engines": {
