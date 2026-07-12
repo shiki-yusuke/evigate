@@ -135,3 +135,10 @@ describe("redact", () => {
     expect(result.count).toBe(0);
   });
 });
+
+describe("redact (Linux home paths)", () => {
+  it("masks /home/<name> preserving the platform prefix", () => {
+    const result = redact("log at /home/runner/work/app/out.log and /Users/alice/x");
+    expect(result.text).toBe("log at /home/USER/work/app/out.log and /Users/USER/x");
+  });
+});

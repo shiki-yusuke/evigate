@@ -90,10 +90,10 @@ const BUILTIN_RULES: Rule[] = [
     pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
     replace: () => "[REDACTED_PEM_KEY]",
   },
-  // macOS ホームディレクトリのユーザー名（通常のパス表記）
+  // ホームディレクトリのユーザー名（macOS: /Users/<name>、Linux: /home/<name>）
   {
-    pattern: /\/Users\/[a-zA-Z0-9_.-]+/g,
-    replace: () => "/Users/USER",
+    pattern: /\/(Users|home)\/[a-zA-Z0-9_.-]+/g,
+    replace: (_match, prefix: string) => `/${prefix}/USER`,
   },
   // Claude Code のエンコード済みパス表記（project ディレクトリ名等）: "-Users-<name>-"
   {
